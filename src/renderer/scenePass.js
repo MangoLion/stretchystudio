@@ -1,30 +1,25 @@
 /**
  * ScenePass — orchestrates the full render pass.
  *
+ * - Computes per-node world matrices (depth-first hierarchy pass)
  * - Sorts parts by draw_order
- * - Builds MVP matrix from view (zoom/pan) + identity world transform (M3+)
+ * - Builds camera MVP from view (zoom/pan)
+ * - Multiplies camera MVP × world matrix for each part
  * - Issues draw calls via PartRenderer
- * - Respects editor.overlays for global visibility toggles
- * - Respects node.visible for per-part visibility
+ * - Respects editor.overlays and node.visible
  */
 import { createProgram } from './program.js';
 import { MESH_VERT, MESH_FRAG, WIRE_VERT, WIRE_FRAG } from './shaders/mesh.js';
 import { PartRenderer } from './partRenderer.js';
+import { computeWorldMatrices, mat3Mul } from './transforms.js';
 
 /**
- * Build a column-major 3×3 MVP matrix for 2D.
+ * Build the camera MVP: maps image-pixel world coords → NDC.
+ *   scale by zoom, translate by pan, flip Y, normalise by canvas size.
  *
- * Maps image pixels → NDC [-1,1]:
- *   scale by zoom, translate by pan, then flip Y and normalise by canvas size.
- *
- * @param {number} canvasW
- * @param {number} canvasH
- * @param {number} zoom
- * @param {number} panX
- * @param {number} panY
  * @returns {Float32Array} 9-element column-major mat3
  */
-function buildMVP(canvasW, canvasH, zoom, panX, panY) {
+function buildCameraMatrix(canvasW, canvasH, zoom, panX, panY) {
   const sx = (2 * zoom) / canvasW;
   const sy = -(2 * zoom) / canvasH; // flip Y (WebGL Y is up)
   const tx = (panX / canvasW) * 2 - 1;
@@ -85,17 +80,20 @@ export class ScenePass {
     if (!project || project.nodes.length === 0) return;
 
     const { zoom, panX, panY } = editor.view;
-    const mvp = buildMVP(canvas.width, canvas.height, zoom, panX, panY);
+    const camera = buildCameraMatrix(canvas.width, canvas.height, zoom, panX, panY);
 
-    const overlays   = editor.overlays   ?? {};
+    const overlays    = editor.overlays   ?? {};
     const selectionSet = new Set(editor.selection ?? []);
 
-    // Sort parts by draw_order ascending
+    // ── Hierarchy pass: compute world matrix for every node ───────────────
+    const worldMatrices = computeWorldMatrices(project.nodes);
+
+    // Sort parts by draw_order ascending (groups are never rendered directly)
     const parts = project.nodes
       .filter(n => n.type === 'part')
       .sort((a, b) => a.draw_order - b.draw_order);
 
-    // ── Textured mesh pass ────────────────────────────────────────────────────
+    // ── Textured mesh pass ────────────────────────────────────────────────
     if (overlays.showImage !== false) {
       gl.useProgram(this.meshProgram);
       const uMvp     = this.meshUniforms('u_mvp');
@@ -104,19 +102,20 @@ export class ScenePass {
 
       for (const part of parts) {
         if (part.visible === false) continue;
+
+        const worldMatrix = worldMatrices.get(part.id);
+        const partMvp     = worldMatrix ? mat3Mul(camera, worldMatrix) : camera;
+
         this.partRenderer.drawPart(
           part.id,
-          mvp,
+          partMvp,
           part.opacity ?? 1,
           uMvp, uTexture, uOpacity
         );
       }
     }
 
-    // ── Overlay pass (wireframe / vertices / edge outline) ────────────────────
-    // Conditions for drawing overlays:
-    //   1. Global overlay toggle is on, OR
-    //   2. Part is selected (always show overlays for selected parts)
+    // ── Overlay pass (wireframe / vertices / edge outline) ────────────────
     const needWirePass = overlays.showWireframe || overlays.showVertices ||
                          overlays.showEdgeOutline || selectionSet.size > 0;
 
@@ -129,29 +128,30 @@ export class ScenePass {
         if (part.visible === false) continue;
         const isSelected = selectionSet.has(part.id);
 
-        // Edge outline — bright green boundary loop
+        const worldMatrix = worldMatrices.get(part.id);
+        const partMvp     = worldMatrix ? mat3Mul(camera, worldMatrix) : camera;
+
+        // Edge outline
         if (overlays.showEdgeOutline || isSelected) {
           gl.uniform4f(uColor, 0.2, 0.9, 0.1, isSelected ? 0.9 : 0.5);
-          this.partRenderer.drawEdgeOutline(part.id, mvp, uMvpW);
+          this.partRenderer.drawEdgeOutline(part.id, partMvp, uMvpW);
         }
 
         // Wireframe triangles
         if (overlays.showWireframe || isSelected) {
           gl.uniform4f(uColor, 0.5, 0.8, 1.0, isSelected ? 0.3 : 0.15);
-          this.partRenderer.drawWireframe(part.id, mvp, uMvpW, uColor);
+          this.partRenderer.drawWireframe(part.id, partMvp, uMvpW, uColor);
         }
 
         // Vertices
         if (overlays.showVertices || isSelected) {
-          this.partRenderer.drawVertices(part.id, mvp, uMvpW, uColor);
+          this.partRenderer.drawVertices(part.id, partMvp, uMvpW, uColor);
         }
       }
     }
   }
 
-  /**
-   * Pass-through to PartRenderer for external callers.
-   */
+  /** Pass-through to PartRenderer for external callers */
   get parts() { return this.partRenderer; }
 
   destroy() {

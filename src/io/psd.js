@@ -66,7 +66,7 @@ export function importPsd(buffer) {
         height:    h,
         imageData,
         blendMode: layer.blendMode ?? 'normal',
-        opacity:   layer.opacity !== undefined ? layer.opacity / 255 : 1,
+        opacity:   layer.opacity !== undefined ? layer.opacity : 1,
         visible:   !layer.hidden,
       });
     }

@@ -2,12 +2,13 @@
  * Inspector panel — shown in the right sidebar.
  *
  * Sections:
- *  1. Overlay toggles (always visible): showImage, showWireframe, showVertices, showEdgeOutline
+ *  1. Overlay toggles: showImage, showWireframe, showVertices, showEdgeOutline
  *  2. Tool mode buttons: select / add_vertex / remove_vertex
- *  3. Selected-part details: name, opacity, visibility
- *  4. Mesh settings: sliders + Remesh button
+ *  3. Selected-node details: name, opacity, visibility (part or group)
+ *  4. Transform panel: x, y, rotation, scale, pivot (part or group)
+ *  5. Mesh settings: sliders + Remesh button (part only)
  */
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { useEditorStore } from '@/store/editorStore';
 import { useProjectStore } from '@/store/projectStore';
 import { Slider } from '@/components/ui/slider';
@@ -80,6 +81,42 @@ function SliderRow({ label, value, min, max, step = 1, onChange, help }) {
   );
 }
 
+/**
+ * A numeric input that:
+ * - Shows the current value
+ * - Updates on blur or Enter
+ * - Syncs externally when not focused
+ */
+function NumericInput({ value, onChange, step = 1, precision = 1, className = '' }) {
+  const ref = useRef(null);
+
+  // Keep the input in sync with external value changes (when not focused)
+  useEffect(() => {
+    if (ref.current && document.activeElement !== ref.current) {
+      ref.current.value = Number(value).toFixed(precision);
+    }
+  });
+
+  const commit = () => {
+    const v = parseFloat(ref.current.value);
+    if (!isNaN(v)) onChange(v);
+  };
+
+  return (
+    <input
+      ref={ref}
+      type="number"
+      step={step}
+      defaultValue={Number(value).toFixed(precision)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      className={`w-16 text-xs bg-input text-foreground border border-border rounded px-1.5 py-0.5 text-right
+        [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none
+        focus:outline-none focus:ring-1 focus:ring-primary/50 ${className}`}
+    />
+  );
+}
+
 /* ── Overlay toggles ──────────────────────────────────────────────────────── */
 
 function OverlayToggles() {
@@ -141,9 +178,9 @@ function ToolModeButtons() {
   );
 }
 
-/* ── Part details ─────────────────────────────────────────────────────────── */
+/* ── Node details (part or group) ─────────────────────────────────────────── */
 
-function PartDetails({ node }) {
+function NodeDetails({ node }) {
   const updateProject = useProjectStore(s => s.updateProject);
 
   const setOpacity = useCallback((v) => {
@@ -162,7 +199,7 @@ function PartDetails({ node }) {
 
   return (
     <div className="space-y-1">
-      <SectionTitle>Part</SectionTitle>
+      <SectionTitle>{node.type === 'group' ? 'Group' : 'Part'}</SectionTitle>
       <Row label="Name">
         <span className="text-xs font-mono truncate max-w-[100px] text-right" title={node.name}>
           {node.name || node.id}
@@ -181,12 +218,102 @@ function PartDetails({ node }) {
         min={0} max={100}
         onChange={(v) => setOpacity(v / 100)}
       />
-      <Row label="Vertices">
-        <span className="text-xs tabular-nums">{node.mesh?.vertices?.length ?? '—'}</span>
+      {node.type === 'part' && (
+        <>
+          <Row label="Vertices">
+            <span className="text-xs tabular-nums">{node.mesh?.vertices?.length ?? '—'}</span>
+          </Row>
+          <Row label="Triangles">
+            <span className="text-xs tabular-nums">{node.mesh?.triangles?.length ?? '—'}</span>
+          </Row>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ── Transform panel ──────────────────────────────────────────────────────── */
+
+function TransformPanel({ node }) {
+  const updateProject = useProjectStore(s => s.updateProject);
+
+  const setTransformField = useCallback((field, value) => {
+    updateProject((proj) => {
+      const n = proj.nodes.find(x => x.id === node.id);
+      if (!n) return;
+      if (!n.transform) n.transform = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
+      n.transform[field] = value;
+    });
+  }, [node.id, updateProject]);
+
+  const t = node.transform ?? { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
+
+  return (
+    <div className="space-y-1.5">
+      <SectionTitle>Transform</SectionTitle>
+
+      {/* Position */}
+      <div className="flex items-center gap-1 py-0.5">
+        <Label className="text-xs text-muted-foreground w-8 shrink-0">Pos</Label>
+        <div className="flex gap-1 flex-1 justify-end">
+          <div className="flex items-center gap-0.5">
+            <span className="text-[10px] text-muted-foreground/60">X</span>
+            <NumericInput value={t.x ?? 0} onChange={v => setTransformField('x', v)} step={1} precision={1} />
+          </div>
+          <div className="flex items-center gap-0.5">
+            <span className="text-[10px] text-muted-foreground/60">Y</span>
+            <NumericInput value={t.y ?? 0} onChange={v => setTransformField('y', v)} step={1} precision={1} />
+          </div>
+        </div>
+      </div>
+
+      {/* Rotation */}
+      <Row label="Rotation °">
+        <NumericInput value={t.rotation ?? 0} onChange={v => setTransformField('rotation', v)} step={0.5} precision={1} />
       </Row>
-      <Row label="Triangles">
-        <span className="text-xs tabular-nums">{node.mesh?.triangles?.length ?? '—'}</span>
-      </Row>
+
+      {/* Scale */}
+      <div className="flex items-center gap-1 py-0.5">
+        <Label className="text-xs text-muted-foreground w-8 shrink-0">Scale</Label>
+        <div className="flex gap-1 flex-1 justify-end">
+          <div className="flex items-center gap-0.5">
+            <span className="text-[10px] text-muted-foreground/60">X</span>
+            <NumericInput value={t.scaleX ?? 1} onChange={v => setTransformField('scaleX', v)} step={0.05} precision={2} />
+          </div>
+          <div className="flex items-center gap-0.5">
+            <span className="text-[10px] text-muted-foreground/60">Y</span>
+            <NumericInput value={t.scaleY ?? 1} onChange={v => setTransformField('scaleY', v)} step={0.05} precision={2} />
+          </div>
+        </div>
+      </div>
+
+      {/* Pivot */}
+      <div className="flex items-center gap-1 py-0.5">
+        <Label className="text-xs text-muted-foreground w-8 shrink-0">Pivot</Label>
+        <div className="flex gap-1 flex-1 justify-end">
+          <div className="flex items-center gap-0.5">
+            <span className="text-[10px] text-muted-foreground/60">X</span>
+            <NumericInput value={t.pivotX ?? 0} onChange={v => setTransformField('pivotX', v)} step={1} precision={1} />
+          </div>
+          <div className="flex items-center gap-0.5">
+            <span className="text-[10px] text-muted-foreground/60">Y</span>
+            <NumericInput value={t.pivotY ?? 0} onChange={v => setTransformField('pivotY', v)} step={1} precision={1} />
+          </div>
+        </div>
+      </div>
+
+      {/* Reset button */}
+      <Button
+        size="sm"
+        variant="outline"
+        className="w-full h-6 text-[10px] mt-1"
+        onClick={() => updateProject((proj) => {
+          const n = proj.nodes.find(x => x.id === node.id);
+          if (n) n.transform = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
+        })}
+      >
+        Reset Transform
+      </Button>
     </div>
   );
 }
@@ -198,18 +325,15 @@ function MeshPanel({ node, onRemesh }) {
   const setMeshDefaults = useEditorStore(s => s.setMeshDefaults);
   const updateProject   = useProjectStore(s => s.updateProject);
 
-  // Effective opts: per-part override or global defaults
   const opts = node.meshOpts ?? meshDefaults;
 
   const setOpt = useCallback((key, value) => {
     if (node.meshOpts) {
-      // Update per-part override
       updateProject((proj) => {
         const n = proj.nodes.find(x => x.id === node.id);
         if (n?.meshOpts) n.meshOpts[key] = value;
       });
     } else {
-      // Update global defaults
       setMeshDefaults({ [key]: value });
     }
   }, [node.id, node.meshOpts, updateProject, setMeshDefaults]);
@@ -299,9 +423,15 @@ export function Inspector({ onRemesh }) {
       {selectedNode ? (
         <>
           <Separator />
-          <PartDetails node={selectedNode} />
+          <NodeDetails node={selectedNode} />
           <Separator />
-          <MeshPanel node={selectedNode} onRemesh={onRemesh} />
+          <TransformPanel node={selectedNode} />
+          {selectedNode.type === 'part' && (
+            <>
+              <Separator />
+              <MeshPanel node={selectedNode} onRemesh={onRemesh} />
+            </>
+          )}
         </>
       ) : (
         <p className="text-xs text-muted-foreground text-center mt-4">

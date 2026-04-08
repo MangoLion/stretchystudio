@@ -36,6 +36,9 @@ export const useEditorStore = create((set) => ({
     numEdgePoints:  80,
   },
 
+  /** Active tab in the Layers panel: 'depth' (draw order) or 'groups' (hierarchy) */
+  activeLayerTab: 'depth',
+
   setSelection:         (nodeIds)  => set({ selection: nodeIds }),
   setView:              (view)     => set((state) => ({ view: { ...state.view, ...view } })),
   setToolMode:          (mode)     => set({ toolMode: mode }),
@@ -43,4 +46,5 @@ export const useEditorStore = create((set) => ({
   setArmedParameterId:  (id)       => set({ armedParameterId: id }),
   setOverlays:          (partial)  => set((state) => ({ overlays: { ...state.overlays, ...partial } })),
   setMeshDefaults:      (partial)  => set((state) => ({ meshDefaults: { ...state.meshDefaults, ...partial } })),
+  setActiveLayerTab:    (tab)      => set({ activeLayerTab: tab }),
 }));

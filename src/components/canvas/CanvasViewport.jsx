@@ -1,19 +1,33 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import { useEditorStore } from '@/store/editorStore';
-import { useProjectStore } from '@/store/projectStore';
+import { useProjectStore, DEFAULT_TRANSFORM } from '@/store/projectStore';
 import { ScenePass } from '@/renderer/scenePass';
 import { importPsd } from '@/io/psd';
+import { computeWorldMatrices, mat3Inverse, mat3Identity } from '@/renderer/transforms';
+import { GizmoOverlay } from '@/components/canvas/GizmoOverlay';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Helpers
 ────────────────────────────────────────────────────────────────────────── */
 
-/** Convert client coords → canvas-space (image/mesh pixel coords) */
+/** Convert client coords → canvas-element-relative world coords (image/mesh pixel space) */
 function clientToCanvasSpace(canvas, clientX, clientY, view) {
   const rect = canvas.getBoundingClientRect();
   const cx = (clientX - rect.left) / view.zoom - view.panX / view.zoom;
   const cy = (clientY - rect.top)  / view.zoom - view.panY / view.zoom;
   return [cx, cy];
+}
+
+/**
+ * Convert a world-space point to a part's local object space using its inverse world matrix.
+ * This ensures vertex picking works correctly for rotated/scaled/translated parts.
+ */
+function worldToLocal(worldX, worldY, inverseWorldMatrix) {
+  const m = inverseWorldMatrix;
+  return [
+    m[0] * worldX + m[3] * worldY + m[6],
+    m[1] * worldX + m[4] * worldY + m[7],
+  ];
 }
 
 /** Find the vertex index closest to (x, y) within `radius`. Returns -1 if none. */
@@ -45,8 +59,8 @@ export default function CanvasViewport({ remeshRef }) {
   const canvasRef   = useRef(null);
   const sceneRef    = useRef(null);
   const rafRef      = useRef(null);
-  const workerRef   = useRef(null);   // single worker slot (terminated & replaced per dispatch)
-  const dragRef     = useRef(null);   // { partId, vertexIndex, offsetX, offsetY }
+  const workersRef  = useRef(new Map());  // Map<partId, Worker> for concurrent mesh generation
+  const dragRef     = useRef(null);   // { partId, vertexIndex, startWorldX, startWorldY, startLocalX, startLocalY }
   const panRef      = useRef(null);   // { startX, startY, panX0, panY0 }
   const isDirtyRef  = useRef(true);
 
@@ -98,9 +112,12 @@ export default function CanvasViewport({ remeshRef }) {
 
   /* ── Mesh worker dispatch ────────────────────────────────────────────── */
   const dispatchMeshWorker = useCallback((partId, imageData, opts) => {
-    if (workerRef.current) workerRef.current.terminate();
+    // Terminate any previous worker for this part
+    const existingWorker = workersRef.current.get(partId);
+    if (existingWorker) existingWorker.terminate();
+
     const worker = new Worker(new URL('@/mesh/worker.js', import.meta.url), { type: 'module' });
-    workerRef.current = worker;
+    workersRef.current.set(partId, worker);
 
     worker.onmessage = (e) => {
       if (!e.data.ok) { console.error('[MeshWorker]', e.data.error); return; }
@@ -116,6 +133,9 @@ export default function CanvasViewport({ remeshRef }) {
         const node = proj.nodes.find(n => n.id === partId);
         if (node) node.mesh = { vertices, uvs: Array.from(uvs), triangles, edgeIndices };
       });
+
+      // Clean up the worker from the map when done
+      workersRef.current.delete(partId);
     };
 
     worker.postMessage({ imageData, opts });
@@ -127,7 +147,6 @@ export default function CanvasViewport({ remeshRef }) {
     const node = proj.nodes.find(n => n.id === partId);
     if (!node) return;
 
-    // Find the texture source and re-rasterize
     const tex = proj.textures.find(t => t.id === partId);
     if (!tex) return;
 
@@ -143,7 +162,6 @@ export default function CanvasViewport({ remeshRef }) {
     img.src = tex.source;
   }, [dispatchMeshWorker]);
 
-  // Expose remeshPart via the ref passed from EditorLayout so Inspector can call it
   useEffect(() => { if (remeshRef) remeshRef.current = remeshPart; }, [remeshRef, remeshPart]);
 
   /* ── PNG import helper ───────────────────────────────────────────────── */
@@ -169,10 +187,11 @@ export default function CanvasViewport({ remeshRef }) {
           type:       'part',
           name:       basename(file.name),
           parent:     null,
-          draw_order: proj.nodes.length,
+          draw_order: proj.nodes.filter(n => n.type === 'part').length,
           opacity:    1,
           visible:    true,
           clip_mask:  null,
+          transform:  DEFAULT_TRANSFORM(),
           meshOpts:   null,
           mesh:       null,
         });
@@ -183,7 +202,6 @@ export default function CanvasViewport({ remeshRef }) {
       if (scene) { scene.parts.uploadTexture(partId, img); isDirtyRef.current = true; }
 
       dispatchMeshWorker(partId, imageData, meshDefaults);
-      // Don't revoke — URL is stored in textures for remesh
     };
     img.src = url;
   }, [updateProject, dispatchMeshWorker]);
@@ -199,8 +217,6 @@ export default function CanvasViewport({ remeshRef }) {
       if (!layers.length) return;
 
       const { meshDefaults } = editorRef.current;
-
-      // Batch-create all nodes first
       const partIds = layers.map(() => uid());
 
       updateProject((proj, ver) => {
@@ -209,28 +225,23 @@ export default function CanvasViewport({ remeshRef }) {
 
         layers.forEach((layer, i) => {
           const partId = partIds[i];
-          // Compose layer into full-canvas ImageData for UV consistency
           const off = document.createElement('canvas');
           off.width = psdW; off.height = psdH;
           const ctx = off.getContext('2d');
-          // Layer imageData may be cropped to its own bounds; stamp it at offset
           const tmp = document.createElement('canvas');
           tmp.width = layer.width; tmp.height = layer.height;
           tmp.getContext('2d').putImageData(layer.imageData, 0, 0);
           ctx.drawImage(tmp, layer.x, layer.y);
           const fullImageData = ctx.getImageData(0, 0, psdW, psdH);
 
-          // Create a Blob URL for remeshing
           off.toBlob((blob) => {
             const url = URL.createObjectURL(blob);
 
-            // Update texture source
             updateProject((p2) => {
               const t = p2.textures.find(t => t.id === partId);
               if (t) t.source = url;
             });
 
-            // Upload texture to GPU
             const img2 = new Image();
             img2.onload = () => {
               const scene = sceneRef.current;
@@ -238,24 +249,23 @@ export default function CanvasViewport({ remeshRef }) {
             };
             img2.src = url;
 
-            // Kick mesh worker
             dispatchMeshWorker(partId, fullImageData, {
               ...meshDefaults,
-              // PSD layers are usually more detailed — use tighter grid
               gridSpacing: Math.max(20, meshDefaults.gridSpacing - 10),
             });
           }, 'image/png');
 
-          proj.textures.push({ id: partId, source: '' }); // placeholder, filled above
+          proj.textures.push({ id: partId, source: '' });
           proj.nodes.push({
             id:         partId,
             type:       'part',
             name:       layer.name,
             parent:     null,
-            draw_order: i,
+            draw_order: layers.length - 1 - i,
             opacity:    layer.opacity,
             visible:    layer.visible,
             clip_mask:  null,
+            transform:  DEFAULT_TRANSFORM(),
             meshOpts:   null,
             mesh:       null,
           });
@@ -291,7 +301,6 @@ export default function CanvasViewport({ remeshRef }) {
     const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
     const newZoom = Math.max(0.05, Math.min(20, view.zoom * factor));
 
-    // Zoom toward mouse position
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
     const newPanX = mx - (mx - view.panX) * (newZoom / view.zoom);
@@ -301,7 +310,6 @@ export default function CanvasViewport({ remeshRef }) {
     isDirtyRef.current = true;
   }, [setView]);
 
-  // Attach wheel as non-passive so e.preventDefault() works
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -315,7 +323,7 @@ export default function CanvasViewport({ remeshRef }) {
     const editor = editorRef.current;
     const { view, toolMode } = editor;
 
-    // Middle mouse or space+left → pan
+    // Middle mouse or alt+left → pan
     if (e.button === 1 || (e.button === 0 && e.altKey)) {
       panRef.current = { startX: e.clientX, startY: e.clientY, panX0: view.panX, panY0: view.panY };
       canvas.setPointerCapture(e.pointerId);
@@ -325,8 +333,11 @@ export default function CanvasViewport({ remeshRef }) {
 
     if (e.button !== 0) return;
 
-    const [cx, cy] = clientToCanvasSpace(canvas, e.clientX, e.clientY, view);
+    const [worldX, worldY] = clientToCanvasSpace(canvas, e.clientX, e.clientY, view);
     const proj = projectRef.current;
+
+    // Compute world matrices once for picking
+    const worldMatrices = computeWorldMatrices(proj.nodes);
 
     // ── add_vertex tool ──────────────────────────────────────────────────
     if (toolMode === 'add_vertex') {
@@ -336,19 +347,19 @@ export default function CanvasViewport({ remeshRef }) {
       const node = proj.nodes.find(n => n.id === partId);
       if (!node?.mesh) return;
 
+      // Convert world click to part's local space
+      const wm  = worldMatrices.get(partId) ?? mat3Identity();
+      const iwm = mat3Inverse(wm);
+      const [lx, ly] = worldToLocal(worldX, worldY, iwm);
+
       updateProject((p) => {
         const n = p.nodes.find(x => x.id === partId);
         if (!n?.mesh) return;
-        const newVert = { x: cx, y: cy, restX: cx, restY: cy };
-        const vi = n.mesh.vertices.length;
+        const newVert = { x: lx, y: ly, restX: lx, restY: ly };
         n.mesh.vertices.push(newVert);
-        // Append UV (normalized by canvas size)
-        const proj2 = p; // p is the draft
-        const w = proj2.canvas.width || 1;
-        const h = proj2.canvas.height || 1;
-        n.mesh.uvs.push(cx / w, cy / h);
-        // Re-triangulate is expensive; for now just add as a dangling vertex
-        // (full remesh is triggered via the Remesh button)
+        const w = p.canvas.width || 1;
+        const h = p.canvas.height || 1;
+        n.mesh.uvs.push(lx / w, ly / h);
       });
       isDirtyRef.current = true;
       return;
@@ -358,14 +369,16 @@ export default function CanvasViewport({ remeshRef }) {
     if (toolMode === 'remove_vertex') {
       for (const node of [...proj.nodes].reverse()) {
         if (node.type !== 'part' || !node.mesh) continue;
-        const idx = findNearestVertex(node.mesh.vertices, cx, cy, 14 / view.zoom);
+        const wm  = worldMatrices.get(node.id) ?? mat3Identity();
+        const iwm = mat3Inverse(wm);
+        const [lx, ly] = worldToLocal(worldX, worldY, iwm);
+        const idx = findNearestVertex(node.mesh.vertices, lx, ly, 14 / view.zoom);
         if (idx >= 0) {
           updateProject((p) => {
             const n = p.nodes.find(x => x.id === node.id);
             if (!n?.mesh) return;
             n.mesh.vertices.splice(idx, 1);
             n.mesh.uvs.splice(idx * 2, 2);
-            // Filter triangles that reference the removed vertex, remap the rest
             n.mesh.triangles = n.mesh.triangles
               .filter(t => !t.includes(idx))
               .map(t => t.map(v => v > idx ? v - 1 : v));
@@ -380,13 +393,19 @@ export default function CanvasViewport({ remeshRef }) {
     // ── select tool: vertex drag ─────────────────────────────────────────
     for (const node of [...proj.nodes].reverse()) {
       if (node.type !== 'part' || !node.mesh) continue;
-      const idx = findNearestVertex(node.mesh.vertices, cx, cy, 14 / view.zoom);
+      const wm  = worldMatrices.get(node.id) ?? mat3Identity();
+      const iwm = mat3Inverse(wm);
+      const [lx, ly] = worldToLocal(worldX, worldY, iwm);
+      const idx = findNearestVertex(node.mesh.vertices, lx, ly, 14 / view.zoom);
       if (idx >= 0) {
         dragRef.current = {
-          partId: node.id,
-          vertexIndex: idx,
-          offsetX: cx - node.mesh.vertices[idx].x,
-          offsetY: cy - node.mesh.vertices[idx].y,
+          partId:       node.id,
+          vertexIndex:  idx,
+          startWorldX:  worldX,
+          startWorldY:  worldY,
+          startLocalX:  node.mesh.vertices[idx].x,
+          startLocalY:  node.mesh.vertices[idx].y,
+          iwm,
         };
         setSelection([node.id]);
         canvas.setPointerCapture(e.pointerId);
@@ -412,14 +431,24 @@ export default function CanvasViewport({ remeshRef }) {
 
     // Vertex drag
     if (!dragRef.current) return;
-    const [cx, cy] = clientToCanvasSpace(canvas, e.clientX, e.clientY, view);
-    const { partId, vertexIndex, offsetX, offsetY } = dragRef.current;
+    const [worldX, worldY] = clientToCanvasSpace(canvas, e.clientX, e.clientY, view);
+    const { partId, vertexIndex, startWorldX, startWorldY, startLocalX, startLocalY, iwm } = dragRef.current;
+
+    // Compute local-space delta from the world-space delta, applying only the linear
+    // part of the inverse world matrix (rotation/scale), not the translation.
+    const worldDx = worldX - startWorldX;
+    const worldDy = worldY - startWorldY;
+    const localDx = iwm[0] * worldDx + iwm[3] * worldDy;
+    const localDy = iwm[1] * worldDx + iwm[4] * worldDy;
+
+    const newLocalX = startLocalX + localDx;
+    const newLocalY = startLocalY + localDy;
 
     updateProject((proj) => {
       const node = proj.nodes.find(n => n.id === partId);
       if (!node?.mesh) return;
-      node.mesh.vertices[vertexIndex].x = cx - offsetX;
-      node.mesh.vertices[vertexIndex].y = cy - offsetY;
+      node.mesh.vertices[vertexIndex].x = newLocalX;
+      node.mesh.vertices[vertexIndex].y = newLocalY;
     });
 
     const scene = sceneRef.current;
@@ -469,6 +498,9 @@ export default function CanvasViewport({ remeshRef }) {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
       />
+
+      {/* Transform gizmo SVG overlay */}
+      <GizmoOverlay />
 
       {/* Drop hint overlay */}
       {project.nodes.length === 0 && (
