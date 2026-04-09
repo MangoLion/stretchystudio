@@ -265,6 +265,12 @@ function MeshPanel({ node, onRemesh, onDeleteMesh }) {
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const meshDefaults = useEditorStore(s => s.meshDefaults);
   const setMeshDefaults = useEditorStore(s => s.setMeshDefaults);
+  const meshEditMode = useEditorStore(s => s.meshEditMode);
+  const setMeshEditMode = useEditorStore(s => s.setMeshEditMode);
+  const meshSubMode = useEditorStore(s => s.meshSubMode);
+  const setMeshSubMode = useEditorStore(s => s.setMeshSubMode);
+  const toolMode = useEditorStore(s => s.toolMode);
+  const setToolMode = useEditorStore(s => s.setToolMode);
   const updateProject = useProjectStore(s => s.updateProject);
 
   const handleDeleteMesh = () => {
@@ -318,15 +324,63 @@ function MeshPanel({ node, onRemesh, onDeleteMesh }) {
         </div>
       </div>
 
-      {/* Mesh info */}
+      {/* Mesh info + Edit Mode toggle */}
       {node.mesh && (
-        <div className="space-y-1">
-          <Row label="Vertices">
-            <span className="text-xs tabular-nums">{node.mesh?.vertices?.length ?? '—'}</span>
-          </Row>
-          <Row label="Triangles">
-            <span className="text-xs tabular-nums">{node.mesh?.triangles?.length ?? '—'}</span>
-          </Row>
+        <div className="space-y-2">
+          <div className="space-y-1">
+            <Row label="Vertices">
+              <span className="text-xs tabular-nums">{node.mesh?.vertices?.length ?? '—'}</span>
+            </Row>
+            <Row label="Triangles">
+              <span className="text-xs tabular-nums">{node.mesh?.triangles?.length ?? '—'}</span>
+            </Row>
+          </div>
+          <Button
+            size="sm"
+            variant={meshEditMode ? 'default' : 'outline'}
+            className="w-full h-7 text-xs"
+            onClick={() => setMeshEditMode(!meshEditMode)}
+          >
+            {meshEditMode ? 'Exit Edit Mode' : 'Edit Mesh'}
+          </Button>
+          {meshEditMode && (
+            <div className="space-y-1.5">
+              <div className="flex rounded overflow-hidden border border-border text-xs">
+                <button
+                  className={`flex-1 py-1 ${meshSubMode === 'deform' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground hover:text-foreground'}`}
+                  onClick={() => setMeshSubMode('deform')}
+                >
+                  Deform
+                </button>
+                <button
+                  className={`flex-1 py-1 border-l border-border ${meshSubMode === 'adjust' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground hover:text-foreground'}`}
+                  onClick={() => setMeshSubMode('adjust')}
+                >
+                  Adjust
+                </button>
+              </div>
+              {meshSubMode === 'adjust' && (
+                <div className="flex gap-1">
+                  <Button
+                    size="sm"
+                    variant={toolMode === 'add_vertex' ? 'default' : 'outline'}
+                    className="flex-1 h-7 text-xs"
+                    onClick={() => setToolMode(toolMode === 'add_vertex' ? 'select' : 'add_vertex')}
+                  >
+                    + Vertex
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={toolMode === 'remove_vertex' ? 'destructive' : 'outline'}
+                    className="flex-1 h-7 text-xs"
+                    onClick={() => setToolMode(toolMode === 'remove_vertex' ? 'select' : 'remove_vertex')}
+                  >
+                    − Vertex
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

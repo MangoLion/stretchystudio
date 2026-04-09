@@ -6,6 +6,7 @@ import { ScenePass } from '@/renderer/scenePass';
 import { importPsd } from '@/io/psd';
 import { detectCharacterFormat, organizeCharacterLayers, matchTag } from '@/io/psdOrganizer';
 import { computeWorldMatrices, mat3Inverse, mat3Identity } from '@/renderer/transforms';
+import { retriangulate } from '@/mesh/generate';
 import { GizmoOverlay } from '@/components/canvas/GizmoOverlay';
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -46,27 +47,6 @@ function findNearestVertex(vertices, x, y, radius) {
 }
 
 /** Check if point (px, py) is inside triangle (v0, v1, v2) */
-function isPointInTriangle(px, py, v0, v1, v2) {
-  const d1 = (px - v1.x) * (v0.y - v1.y) - (v0.x - v1.x) * (py - v1.y);
-  const d2 = (px - v2.x) * (v1.y - v2.y) - (v1.x - v2.x) * (py - v2.y);
-  const d3 = (px - v0.x) * (v2.y - v0.y) - (v2.x - v0.x) * (py - v0.y);
-
-  const has_neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
-  const has_pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
-
-  return !(has_neg && has_pos);
-}
-
-/** Check if point (lx, ly) is inside any triangle of the mesh */
-function isPointInMesh(lx, ly, mesh) {
-  if (!mesh?.vertices || !mesh?.triangles) return false;
-  const vs = mesh.vertices;
-  const ts = mesh.triangles;
-  for (let i = 0; i < ts.length; i++) {
-    if (isPointInTriangle(lx, ly, vs[ts[i][0]], vs[ts[i][1]], vs[ts[i][2]])) return true;
-  }
-  return false;
-}
 
 /** Sample alpha (0-255) at integer pixel coords from an ImageData. Returns 0 if out-of-bounds. */
 function sampleAlpha(imageData, lx, ly) {
@@ -172,7 +152,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
 
   /* ── Mark dirty when editor view / overlays / selection changes ──────── */
   useEffect(() => { isDirtyRef.current = true; },
-    [editorState.view, editorState.selection, editorState.overlays]);
+    [editorState.view, editorState.selection, editorState.overlays, editorState.meshEditMode]);
 
   /* ── Mesh worker dispatch ────────────────────────────────────────────── */
   const dispatchMeshWorker = useCallback((partId, imageData, opts) => {
@@ -511,31 +491,102 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
       .sort((a, b) => (b.draw_order ?? 0) - (a.draw_order ?? 0));
 
     // ── select tool: vertex drag and part selection ──────────────────────
-    // Priority: if the currently selected part has a mesh and the click lands on one of its
-    // vertices, handle it immediately — don't let a different layer's alpha check steal focus.
+    // When mesh edit mode is active, restrict interaction to the selected part only.
+    const { meshEditMode, toolMode } = editorRef.current;
     const currentSelection = editorRef.current.selection ?? [];
-    if (currentSelection.length > 0) {
+    if (meshEditMode && currentSelection.length > 0) {
       const selNode = proj.nodes.find(n => n.id === currentSelection[0] && n.type === 'part' && n.mesh);
       if (selNode) {
         const wm  = worldMatrices.get(selNode.id) ?? mat3Identity();
         const iwm = mat3Inverse(wm);
         const [lx, ly] = worldToLocal(worldX, worldY, iwm);
-        const idx = findNearestVertex(selNode.mesh.vertices, lx, ly, 14 / view.zoom);
-        if (idx >= 0) {
-          dragRef.current = {
-            partId:       selNode.id,
-            vertexIndex:  idx,
-            startWorldX:  worldX,
-            startWorldY:  worldY,
-            startLocalX:  selNode.mesh.vertices[idx].x,
-            startLocalY:  selNode.mesh.vertices[idx].y,
-            iwm,
-          };
-          canvas.setPointerCapture(e.pointerId);
-          canvas.style.cursor = 'grabbing';
-          return;
+
+        if (toolMode === 'add_vertex') {
+          // Compute new mesh data first, then upload and persist atomically
+          const newVerts = [...selNode.mesh.vertices, { x: lx, y: ly, restX: lx, restY: ly }];
+          const oldUvs   = selNode.mesh.uvs;
+          const newUvs   = new Float32Array(oldUvs.length + 2);
+          newUvs.set(oldUvs);
+          newUvs[oldUvs.length]     = lx / (selNode.imageWidth  ?? 1);
+          newUvs[oldUvs.length + 1] = ly / (selNode.imageHeight ?? 1);
+          const result = retriangulate(newVerts, newUvs, selNode.mesh.edgeIndices);
+
+          // Upload to GPU immediately (no stale ref)
+          sceneRef.current?.parts.uploadMesh(selNode.id, {
+            vertices: result.vertices,
+            uvs: result.uvs,
+            triangles: result.triangles,
+            edgeIndices: result.edgeIndices,
+          });
+          isDirtyRef.current = true;
+
+          // Persist to store
+          updateProject((proj2) => {
+            const node = proj2.nodes.find(n => n.id === selNode.id);
+            if (!node?.mesh) return;
+            node.mesh.vertices   = result.vertices;
+            node.mesh.uvs        = Array.from(result.uvs);
+            node.mesh.triangles  = result.triangles;
+          });
+
+        } else if (toolMode === 'remove_vertex') {
+          const idx = findNearestVertex(selNode.mesh.vertices, lx, ly, 14 / view.zoom);
+          if (idx >= 0 && selNode.mesh.vertices.length > 3) {
+            // Compute new mesh data first
+            const newVerts = selNode.mesh.vertices.filter((_, i) => i !== idx);
+            const oldUvs   = selNode.mesh.uvs;
+            const newUvs   = new Float32Array(oldUvs.length - 2);
+            for (let i = 0; i < idx; i++) { newUvs[i * 2] = oldUvs[i * 2]; newUvs[i * 2 + 1] = oldUvs[i * 2 + 1]; }
+            for (let i = idx; i < newVerts.length; i++) { newUvs[i * 2] = oldUvs[(i + 1) * 2]; newUvs[i * 2 + 1] = oldUvs[(i + 1) * 2 + 1]; }
+            const oldEdge  = selNode.mesh.edgeIndices ?? new Set();
+            const newEdge  = new Set();
+            for (const ei of oldEdge) {
+              if (ei < idx) newEdge.add(ei);
+              else if (ei > idx) newEdge.add(ei - 1);
+            }
+            const result = retriangulate(newVerts, newUvs, newEdge);
+
+            // Upload to GPU immediately
+            sceneRef.current?.parts.uploadMesh(selNode.id, {
+              vertices: result.vertices,
+              uvs: result.uvs,
+              triangles: result.triangles,
+              edgeIndices: newEdge,
+            });
+            isDirtyRef.current = true;
+
+            // Persist to store
+            updateProject((proj2) => {
+              const node = proj2.nodes.find(n => n.id === selNode.id);
+              if (!node?.mesh) return;
+              node.mesh.vertices   = result.vertices;
+              node.mesh.uvs        = Array.from(result.uvs);
+              node.mesh.triangles  = result.triangles;
+              node.mesh.edgeIndices = newEdge;
+            });
+          }
+        } else {
+          // Default select tool: start vertex drag
+          const idx = findNearestVertex(selNode.mesh.vertices, lx, ly, 14 / view.zoom);
+          if (idx >= 0) {
+            dragRef.current = {
+              partId:       selNode.id,
+              vertexIndex:  idx,
+              startWorldX:  worldX,
+              startWorldY:  worldY,
+              startLocalX:  selNode.mesh.vertices[idx].x,
+              startLocalY:  selNode.mesh.vertices[idx].y,
+              imageWidth:   selNode.imageWidth,
+              imageHeight:  selNode.imageHeight,
+              iwm,
+            };
+            canvas.setPointerCapture(e.pointerId);
+            canvas.style.cursor = 'grabbing';
+          }
         }
       }
+      // In edit mode, never change selection or interact with other layers
+      return;
     }
 
     for (const node of sortedParts) {
@@ -554,6 +605,8 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
             startWorldY:  worldY,
             startLocalX:  node.mesh.vertices[idx].x,
             startLocalY:  node.mesh.vertices[idx].y,
+            imageWidth:   node.imageWidth,
+            imageHeight:  node.imageHeight,
             iwm,
           };
           setSelection([node.id]);
@@ -605,7 +658,8 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
     // Vertex drag
     if (!dragRef.current) return;
     const [worldX, worldY] = clientToCanvasSpace(canvas, e.clientX, e.clientY, view);
-    const { partId, vertexIndex, startWorldX, startWorldY, startLocalX, startLocalY, iwm } = dragRef.current;
+    const { partId, vertexIndex, startWorldX, startWorldY, startLocalX, startLocalY,
+            imageWidth, imageHeight, iwm } = dragRef.current;
 
     // Compute local-space delta from the world-space delta, applying only the linear
     // part of the inverse world matrix (rotation/scale), not the translation.
@@ -614,15 +668,31 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
     const localDx = iwm[0] * worldDx + iwm[3] * worldDy;
     const localDy = iwm[1] * worldDx + iwm[4] * worldDy;
 
-    const newLocalX = startLocalX + localDx;
-    const newLocalY = startLocalY + localDy;
+    const { meshSubMode } = editorRef.current;
 
-    updateProject((proj) => {
-      const node = proj.nodes.find(n => n.id === partId);
-      if (!node?.mesh) return;
-      node.mesh.vertices[vertexIndex].x = newLocalX;
-      node.mesh.vertices[vertexIndex].y = newLocalY;
-    });
+    if (meshSubMode === 'adjust') {
+      // ADJUST: move vertex AND update its UV to match the new position, so the
+      // texture tracks with the vertex (no stretching at this vertex — it resamples
+      // the texture at wherever it lands).
+      const newLocalX = startLocalX + localDx;
+      const newLocalY = startLocalY + localDy;
+      updateProject((proj) => {
+        const node = proj.nodes.find(n => n.id === partId);
+        if (!node?.mesh) return;
+        node.mesh.vertices[vertexIndex].x      = newLocalX;
+        node.mesh.vertices[vertexIndex].y      = newLocalY;
+        node.mesh.uvs[vertexIndex * 2]         = newLocalX / (imageWidth  ?? 1);
+        node.mesh.uvs[vertexIndex * 2 + 1]     = newLocalY / (imageHeight ?? 1);
+      });
+    } else {
+      // DEFORM: move the vertex position, keep UVs fixed (texture stretches)
+      updateProject((proj) => {
+        const node = proj.nodes.find(n => n.id === partId);
+        if (!node?.mesh) return;
+        node.mesh.vertices[vertexIndex].x = startLocalX + localDx;
+        node.mesh.vertices[vertexIndex].y = startLocalY + localDy;
+      });
+    }
 
     const scene = sceneRef.current;
     if (scene) {

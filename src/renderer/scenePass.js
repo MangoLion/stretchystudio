@@ -85,8 +85,9 @@ export class ScenePass {
 
     const camera = buildCameraMatrix(canvas.width, canvas.height, zoom, panX, panY);
 
-    const overlays    = editor.overlays   ?? {};
+    const overlays     = editor.overlays   ?? {};
     const selectionSet = new Set(editor.selection ?? []);
+    const meshEditMode = editor.meshEditMode && selectionSet.size > 0;
 
     // ── Hierarchy pass: compute world matrix for every node ───────────────
     const worldMatrices = computeWorldMatrices(project.nodes);
@@ -109,10 +110,14 @@ export class ScenePass {
         const worldMatrix = worldMatrices.get(part.id);
         const partMvp     = worldMatrix ? mat3Mul(camera, worldMatrix) : camera;
 
+        const baseOpacity = part.opacity ?? 1;
+        const effectiveOpacity = meshEditMode && !selectionSet.has(part.id)
+          ? baseOpacity * 0.5
+          : baseOpacity;
         this.partRenderer.drawPart(
           part.id,
           partMvp,
-          part.opacity ?? 1,
+          effectiveOpacity,
           uMvp, uTexture, uOpacity
         );
       }

@@ -39,7 +39,23 @@ export const useEditorStore = create((set) => ({
   /** Active tab in the Layers panel: 'depth' (draw order) or 'groups' (hierarchy) */
   activeLayerTab: 'depth',
 
-  setSelection:         (nodeIds)  => set({ selection: nodeIds }),
+  /** When true, only the selected meshed part is interactable; other layers are dimmed */
+  meshEditMode: false,
+
+  /** Sub-mode while in mesh edit mode: 'deform' moves vertices, 'adjust' moves UVs */
+  meshSubMode: 'deform',
+
+  setSelection: (nodeIds) => set((state) => ({
+    selection: nodeIds,
+    // Exit mesh edit mode if selection changes to a different node or clears
+    meshEditMode: state.meshEditMode &&
+      nodeIds.length > 0 &&
+      nodeIds[0] === state.selection[0]
+        ? state.meshEditMode
+        : false,
+  })),
+  setMeshEditMode:      (on)       => set({ meshEditMode: on, toolMode: 'select' }),
+  setMeshSubMode:       (mode)     => set({ meshSubMode: mode, toolMode: 'select' }),
   setView:              (view)     => set((state) => ({ view: { ...state.view, ...view } })),
   setToolMode:          (mode)     => set({ toolMode: mode }),
   setDragState:         (ds)       => set((state) => ({ dragState: { ...state.dragState, ...ds } })),
