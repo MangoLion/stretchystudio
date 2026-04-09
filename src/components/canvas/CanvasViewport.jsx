@@ -162,7 +162,9 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
         const anim = animRef.current;
         const proj = projectRef.current;
         const activeAnim = proj.animations.find(a => a.id === anim.activeAnimationId) ?? null;
-        const poseOverrides = anim.isPlaying || anim.currentTime > 0
+        // Always compute pose overrides in animation mode so frame 0 keyframes
+        // are respected. In staging mode, skip so raw node.transform is used.
+        const poseOverrides = editorRef.current.editorMode === 'animation'
           ? computePoseOverrides(activeAnim, anim.currentTime)
           : null;
 

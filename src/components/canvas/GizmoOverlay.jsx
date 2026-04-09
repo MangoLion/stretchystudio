@@ -13,9 +13,11 @@
  *    screenX = worldX * zoom + panX
  *    screenY = worldY * zoom + panY
  */
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 import { useEditorStore } from '@/store/editorStore';
 import { useProjectStore } from '@/store/projectStore';
+import { useAnimationStore } from '@/store/animationStore';
+import { computePoseOverrides } from '@/renderer/animationEngine';
 import { computeWorldMatrices, mat3Identity, mat3Inverse } from '@/renderer/transforms';
 
 const MOVE_RADIUS   = 8;
@@ -28,9 +30,13 @@ export function GizmoOverlay() {
 
   const toolMode      = useEditorStore(s => s.toolMode);
   const selection     = useEditorStore(s => s.selection);
+  const editorMode    = useEditorStore(s => s.editorMode);
   const view          = useEditorStore(s => s.view);
   const nodes         = useProjectStore(s => s.project.nodes);
+  const animations    = useProjectStore(s => s.project.animations);
   const updateProject = useProjectStore(s => s.updateProject);
+  const animCurrentTime       = useAnimationStore(s => s.currentTime);
+  const animActiveAnimationId = useAnimationStore(s => s.activeAnimationId);
 
   // Keep live refs so event handlers always have fresh values without stale closures
   const viewRef   = useRef(view);
@@ -38,9 +44,30 @@ export function GizmoOverlay() {
   useEffect(() => { viewRef.current = view; }, [view]);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
 
+  // Build effective nodes with animation pose overrides applied (same as scenePass).
+  const effectiveNodes = useMemo(() => {
+    if (editorMode !== 'animation') return nodes;
+    const activeAnim = animations.find(a => a.id === animActiveAnimationId) ?? null;
+    const overrides  = computePoseOverrides(activeAnim, animCurrentTime);
+    if (!overrides.size) return nodes;
+    return nodes.map(node => {
+      const ov = overrides.get(node.id);
+      if (!ov) return node;
+      const transformOv = { ...node.transform };
+      for (const k of ['x', 'y', 'rotation', 'scaleX', 'scaleY', 'hSkew']) {
+        if (ov[k] !== undefined) transformOv[k] = ov[k];
+      }
+      return {
+        ...node,
+        transform: transformOv,
+        opacity: ov.opacity !== undefined ? ov.opacity : node.opacity,
+      };
+    });
+  }, [editorMode, nodes, animations, animActiveAnimationId, animCurrentTime]);
+
   // Only show in select mode with exactly one selection
   const selectedNode = (toolMode === 'select' && selection.length === 1)
-    ? nodes.find(n => n.id === selection[0])
+    ? effectiveNodes.find(n => n.id === selection[0])
     : null;
 
   if (!selectedNode) return null;
@@ -48,7 +75,7 @@ export function GizmoOverlay() {
   // ── Compute gizmo screen position ──────────────────────────────────────
   const { zoom, panX, panY } = view;
 
-  const worldMap = computeWorldMatrices(nodes);
+  const worldMap = computeWorldMatrices(effectiveNodes);
   const wm       = worldMap.get(selectedNode.id) ?? mat3Identity();
 
   const t      = selectedNode.transform ?? {};
@@ -94,7 +121,7 @@ export function GizmoOverlay() {
         }
       }
     }
-    const children = nodes.filter(c => c.parent === node.id);
+    const children = effectiveNodes.filter(c => c.parent === node.id);
     for (const c of children) traverse(c);
   }
   traverse(selectedNode);
