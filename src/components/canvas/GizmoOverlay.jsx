@@ -37,33 +37,42 @@ export function GizmoOverlay() {
   const updateProject = useProjectStore(s => s.updateProject);
   const animCurrentTime       = useAnimationStore(s => s.currentTime);
   const animActiveAnimationId = useAnimationStore(s => s.activeAnimationId);
+  const animDraftPose         = useAnimationStore(s => s.draftPose);
+  const setDraftPose          = useAnimationStore(s => s.setDraftPose);
 
   // Keep live refs so event handlers always have fresh values without stale closures
-  const viewRef   = useRef(view);
-  const nodesRef  = useRef(nodes);
+  const viewRef        = useRef(view);
+  const nodesRef       = useRef(nodes);
+  const editorModeRef  = useRef(editorMode);
+  const setDraftPoseRef = useRef(setDraftPose);
   useEffect(() => { viewRef.current = view; }, [view]);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+  useEffect(() => { editorModeRef.current = editorMode; }, [editorMode]);
+  useEffect(() => { setDraftPoseRef.current = setDraftPose; }, [setDraftPose]);
 
-  // Build effective nodes with animation pose overrides applied (same as scenePass).
+  const ANIM_KEYS = ['x', 'y', 'rotation', 'scaleX', 'scaleY', 'hSkew'];
+
+  // Build effective nodes: keyframe overrides first, then draftPose on top.
   const effectiveNodes = useMemo(() => {
     if (editorMode !== 'animation') return nodes;
     const activeAnim = animations.find(a => a.id === animActiveAnimationId) ?? null;
     const overrides  = computePoseOverrides(activeAnim, animCurrentTime);
-    if (!overrides.size) return nodes;
+    const hasDraft   = animDraftPose.size > 0;
+    if (!overrides.size && !hasDraft) return nodes;
     return nodes.map(node => {
       const ov = overrides.get(node.id);
-      if (!ov) return node;
+      const dr = animDraftPose.get(node.id);
+      if (!ov && !dr) return node;
       const transformOv = { ...node.transform };
-      for (const k of ['x', 'y', 'rotation', 'scaleX', 'scaleY', 'hSkew']) {
-        if (ov[k] !== undefined) transformOv[k] = ov[k];
-      }
+      if (ov) { for (const k of ANIM_KEYS) { if (ov[k] !== undefined) transformOv[k] = ov[k]; } }
+      if (dr) { for (const k of ANIM_KEYS) { if (dr[k] !== undefined) transformOv[k] = dr[k]; } }
       return {
         ...node,
         transform: transformOv,
-        opacity: ov.opacity !== undefined ? ov.opacity : node.opacity,
+        opacity: dr?.opacity ?? ov?.opacity ?? node.opacity,
       };
     });
-  }, [editorMode, nodes, animations, animActiveAnimationId, animCurrentTime]);
+  }, [editorMode, nodes, animations, animActiveAnimationId, animCurrentTime, animDraftPose]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Only show in select mode with exactly one selection
   const selectedNode = (toolMode === 'select' && selection.length === 1)
@@ -166,8 +175,9 @@ export function GizmoOverlay() {
       nodeId:       selectedNode.id,
       startClientX: e.clientX,
       startClientY: e.clientY,
-      startX:       t.x ?? 0,
+      startX:       t.x ?? 0,   // reads effective (keyframe + draft) value
       startY:       t.y ?? 0,
+      isAnimMode:   editorModeRef.current === 'animation',
     };
   }
 
@@ -179,14 +189,15 @@ export function GizmoOverlay() {
     const py = svgRect.top  + pivotScreenY;
     const dx = e.clientX - px;
     const dy = e.clientY - py;
-    
+
     dragRef.current = {
       type:          'rotate',
       nodeId:        selectedNode.id,
       startAngle:    Math.atan2(dy, dx),
-      startRotation: t.rotation ?? 0,
+      startRotation: t.rotation ?? 0,  // reads effective value
       pivotScreenX:  pivotScreenX,
       pivotScreenY:  pivotScreenY,
+      isAnimMode:    editorModeRef.current === 'animation',
     };
   }
 
@@ -244,13 +255,18 @@ export function GizmoOverlay() {
       const { zoom: z } = viewRef.current;
       const dx = (e.clientX - drag.startClientX) / z;
       const dy = (e.clientY - drag.startClientY) / z;
-      updateProject((proj) => {
-        const node = proj.nodes.find(n => n.id === drag.nodeId);
-        if (!node) return;
-        if (!node.transform) node.transform = { x: 0, y: 0, rotation: 0, hSkew: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
-        node.transform.x = drag.startX + dx;
-        node.transform.y = drag.startY + dy;
-      });
+      if (drag.isAnimMode) {
+        // In animation mode: write to draftPose, don't touch node.transform
+        setDraftPoseRef.current(drag.nodeId, { x: drag.startX + dx, y: drag.startY + dy });
+      } else {
+        updateProject((proj) => {
+          const node = proj.nodes.find(n => n.id === drag.nodeId);
+          if (!node) return;
+          if (!node.transform) node.transform = { x: 0, y: 0, rotation: 0, hSkew: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
+          node.transform.x = drag.startX + dx;
+          node.transform.y = drag.startY + dy;
+        });
+      }
       return;
     }
 
@@ -260,16 +276,20 @@ export function GizmoOverlay() {
       const dy = e.clientY - (svgRect.top  + drag.pivotScreenY);
       const currentAngle = Math.atan2(dy, dx);
       let delta = (currentAngle - drag.startAngle) * (180 / Math.PI);
-      
+
       // Shift modifier for 15 degree snapping
       if (e.shiftKey) delta = Math.round(delta / 15) * 15;
 
-      updateProject((proj) => {
-        const node = proj.nodes.find(n => n.id === drag.nodeId);
-        if (!node) return;
-        if (!node.transform) node.transform = { x: 0, y: 0, rotation: 0, hSkew: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
-        node.transform.rotation = drag.startRotation + delta;
-      });
+      if (drag.isAnimMode) {
+        setDraftPoseRef.current(drag.nodeId, { rotation: drag.startRotation + delta });
+      } else {
+        updateProject((proj) => {
+          const node = proj.nodes.find(n => n.id === drag.nodeId);
+          if (!node) return;
+          if (!node.transform) node.transform = { x: 0, y: 0, rotation: 0, hSkew: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
+          node.transform.rotation = drag.startRotation + delta;
+        });
+      }
       return;
     }
 

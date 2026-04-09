@@ -41,6 +41,15 @@ export const useAnimationStore = create((set, get) => ({
    */
   restPose: new Map(),
 
+  /**
+   * Draft pose — uncommitted user edits made while in animation mode.
+   * These sit on TOP of keyframe values so the user can freely stage a new
+   * pose before pressing K to commit it.  Cleared when seeking or stopping.
+   *
+   * Map<nodeId, { x?, y?, rotation?, scaleX?, scaleY?, hSkew?, opacity? }>
+   */
+  draftPose: new Map(),
+
   // ── Setters ──────────────────────────────────────────────────────────────
 
   setActiveAnimationId: (id) => set({ activeAnimationId: id }),
@@ -79,7 +88,24 @@ export const useAnimationStore = create((set, get) => ({
     endFrame: Math.max(s.startFrame + 1, Math.round(f)),
   })),
 
-  setPoseOverrides: (map) => set({ poseOverrides: map }),
+  // ── Draft pose actions ────────────────────────────────────────────────────
+
+  /** Merge props into the draft override for one node. */
+  setDraftPose: (nodeId, props) => set((s) => {
+    const next = new Map(s.draftPose);
+    next.set(nodeId, { ...(next.get(nodeId) ?? {}), ...props });
+    return { draftPose: next };
+  }),
+
+  /** Remove one node's draft (called after K commits it). */
+  clearDraftPoseForNode: (nodeId) => set((s) => {
+    const next = new Map(s.draftPose);
+    next.delete(nodeId);
+    return { draftPose: next };
+  }),
+
+  /** Clear all drafts (called on seek / stop). */
+  clearDraftPose: () => set({ draftPose: new Map() }),
 
   // ── Transport ─────────────────────────────────────────────────────────────
 
@@ -90,15 +116,16 @@ export const useAnimationStore = create((set, get) => ({
     isPlaying: false,
     currentTime: (s.startFrame / s.fps) * 1000,
     _lastTimestamp: null,
-    poseOverrides: new Map(),
+    draftPose: new Map(),
   })),
 
   seekFrame: (frame) => set((s) => ({
     currentTime: (frame / s.fps) * 1000,
     _lastTimestamp: null,
+    draftPose: new Map(),
   })),
 
-  seekTime: (ms) => set({ currentTime: ms, _lastTimestamp: null }),
+  seekTime: (ms) => set({ currentTime: ms, _lastTimestamp: null, draftPose: new Map() }),
 
   // ── rAF tick ──────────────────────────────────────────────────────────────
   /**

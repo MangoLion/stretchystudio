@@ -162,11 +162,20 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
         const anim = animRef.current;
         const proj = projectRef.current;
         const activeAnim = proj.animations.find(a => a.id === anim.activeAnimationId) ?? null;
-        // Always compute pose overrides in animation mode so frame 0 keyframes
-        // are respected. In staging mode, skip so raw node.transform is used.
-        const poseOverrides = editorRef.current.editorMode === 'animation'
-          ? computePoseOverrides(activeAnim, anim.currentTime)
-          : null;
+
+        let poseOverrides = null;
+        if (editorRef.current.editorMode === 'animation') {
+          // Base: keyframe-interpolated values
+          poseOverrides = computePoseOverrides(activeAnim, anim.currentTime);
+          // Overlay: draftPose (uncommitted drag) takes priority
+          if (anim.draftPose.size > 0) {
+            poseOverrides = new Map(poseOverrides);
+            for (const [nodeId, draft] of anim.draftPose) {
+              const existing = poseOverrides.get(nodeId) ?? {};
+              poseOverrides.set(nodeId, { ...existing, ...draft });
+            }
+          }
+        }
 
         sceneRef.current.draw(projectRef.current, editorRef.current, isDarkRef.current, poseOverrides);
         isDirtyRef.current = false;
@@ -186,8 +195,9 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
   useEffect(() => { isDirtyRef.current = true; },
     [editorState.view, editorState.selection, editorState.overlays, editorState.meshEditMode]);
 
-  /* ── Mark dirty when animation time changes (scrubbing) ─────────────── */
+  /* ── Mark dirty when animation time or draft pose changes ───────────── */
   useEffect(() => { isDirtyRef.current = true; }, [animStore.currentTime]);
+  useEffect(() => { isDirtyRef.current = true; }, [animStore.draftPose]);
 
   /* ── [ / ] brush size shortcuts (only in deform edit mode) ────────────── */
   useEffect(() => {
@@ -222,6 +232,11 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
 
       const currentTimeMs = anim.currentTime;
 
+      // Pre-compute effective values for each selected node:
+      // draftPose (drag) > current keyframe > node.transform
+      const activeAnimObj = proj.animations.find(a => a.id === animId) ?? null;
+      const keyframeOverrides = computePoseOverrides(activeAnimObj, currentTimeMs);
+
       updateProject((p) => {
         const animation = p.animations.find(a => a.id === animId);
         if (!animation) return;
@@ -230,11 +245,21 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
           const node = p.nodes.find(n => n.id === nodeId);
           if (!node) continue;
 
-          const startMs = (anim.startFrame / anim.fps) * 1000;
-          const rest    = anim.restPose.get(nodeId);
+          const startMs  = (anim.startFrame / anim.fps) * 1000;
+          const rest     = anim.restPose.get(nodeId);
+          const draft    = anim.draftPose.get(nodeId);
+          const kfValues = keyframeOverrides.get(nodeId);
 
           for (const prop of KEYFRAME_PROPS) {
-            const value = getNodePropertyValue(node, prop);
+            // Read value from highest-priority source: draft > current keyframe > base transform
+            let value;
+            if (draft && draft[prop] !== undefined) {
+              value = draft[prop];
+            } else if (kfValues && kfValues[prop] !== undefined) {
+              value = kfValues[prop];
+            } else {
+              value = getNodePropertyValue(node, prop);
+            }
 
             let track = animation.tracks.find(t => t.nodeId === nodeId && t.property === prop);
             const isNewTrack = !track;
@@ -245,9 +270,6 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
 
             // Auto-insert a rest-pose keyframe at startFrame when this is the
             // first keyframe for this track and we're past the start.
-            // This ensures interpolation from frame 0 works correctly with
-            // group hierarchy — children keep their base position until their
-            // own keyframes kick in.
             if (isNewTrack && currentTimeMs > startMs && rest) {
               const baseVal = prop === 'opacity' ? (rest.opacity ?? 1)
                             : (rest[prop] ?? (prop === 'scaleX' || prop === 'scaleY' ? 1 : 0));
@@ -258,6 +280,11 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
           }
         }
       });
+
+      // Clear draft for committed nodes so the keyframe value takes over
+      for (const nodeId of selectedIds) {
+        anim.clearDraftPoseForNode(nodeId);
+      }
     };
 
     window.addEventListener('keydown', handler);
