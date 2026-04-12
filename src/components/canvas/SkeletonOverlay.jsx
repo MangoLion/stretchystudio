@@ -469,15 +469,31 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
     );
     if (skeletonEditMode) {
       // Label under each joint in edit mode for orientation
+      const labelY = cy + radius + 11;
+      const charWidth = 5.4; // estimate for small font
+      const labelWidth = role.length * charWidth + 8;
+      const labelHeight = 13;
+
       circles.push(
-        <text key={`${role}-label`}
-          x={cx} y={cy + radius + 11}
-          textAnchor="middle" fontSize={9}
-          fill="rgba(255,255,255,0.7)" pointerEvents="none"
-          style={{ userSelect: 'none' }}
-        >
-          {role}
-        </text>
+        <g key={`${role}-label`}>
+          <rect
+            x={cx - labelWidth / 2}
+            y={labelY - 9.5}
+            width={labelWidth}
+            height={labelHeight}
+            rx={4}
+            fill="rgba(0,0,0,0.55)"
+            pointerEvents="none"
+          />
+          <text
+            x={cx} y={labelY}
+            textAnchor="middle" fontSize={9}
+            fill="white" pointerEvents="none"
+            style={{ userSelect: 'none', fontWeight: 500 }}
+          >
+            {role}
+          </text>
+        </g>
       );
     }
   }

@@ -9,6 +9,15 @@ Unlike traditional bone-based systems, Stretchy Studio focuses on a **timeline-f
 
 ---
 
+## 🔗 Links
+
+- **🚀 Launch App**: [editor.stretchy.studio](https://editor.stretchy.studio)
+- **💬 Discord**: [Join our community](https://discord.com/invite/zB6TrHTwAb)
+- **💻 GitHub**: [mangoLion/stretchystudio](https://github.com/mangoLion/stretchystudio)
+- **🌐 Landing Page**: [stretchy.studio](https://stretchy.studio) (or local `/landing/index.html`)
+
+---
+
 ## ✨ Key Features
 
 ### 📂 Intelligent Import
