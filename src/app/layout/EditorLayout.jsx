@@ -10,6 +10,8 @@ import { LayerPanel } from '@/components/layers/LayerPanel';
 import { Inspector } from '@/components/inspector/Inspector';
 import { TimelinePanel } from '@/components/timeline/TimelinePanel';
 import { AnimationListPanel } from '@/components/animation/AnimationListPanel';
+import { ArmaturePanel } from '@/components/armature/ArmaturePanel';
+
 
 export default function EditorLayout() {
   /**
@@ -82,7 +84,8 @@ export default function EditorLayout() {
             <ResizablePanelGroup direction="vertical">
               {/* Inspector Content */}
               <ResizablePanel defaultSize={isAnimationMode ? 75 : 100} minSize={30}>
-                <div className="flex h-full flex-col border-l">
+                <div className="flex h-full flex-col border-l overflow-hidden">
+                  <ArmaturePanel />
                   <div className="px-3 py-2 border-b shrink-0 flex items-center justify-between">
                     <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Inspector</h2>
                   </div>

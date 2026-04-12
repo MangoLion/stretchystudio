@@ -16,7 +16,7 @@ void main() {
 }
 `;
 
-// Fragment shader — sample texture with alpha, optional iris-clip mask
+// Fragment shader — sample texture with alpha
 export const MESH_FRAG = `#version 300 es
 precision mediump float;
 
@@ -25,19 +25,11 @@ in vec2 v_uv;
 uniform sampler2D u_texture;
 uniform float     u_opacity;
 
-// Iris clipping: when u_hasMask is 1 the fragment alpha is multiplied by
-// the alpha of u_mask at the same UV (the eyewhite layer, same canvas size).
-uniform int       u_hasMask;
-uniform sampler2D u_mask;
-
 out vec4 out_color;
 
 void main() {
   vec4 tex = texture(u_texture, v_uv);
-  if (u_hasMask == 1) {
-    float maskAlpha = texture(u_mask, v_uv).a;
-    tex.a *= maskAlpha;
-  }
+  if (tex.a < 0.1) discard;
   out_color = vec4(tex.rgb, tex.a * u_opacity);
 }
 `;

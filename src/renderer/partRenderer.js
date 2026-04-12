@@ -287,15 +287,6 @@ export class PartRenderer {
     gl.bindVertexArray(null);
   }
 
-  /**
-   * Return the raw WebGLTexture for a part, or null if not yet uploaded.
-   * Used by ScenePass to bind another part's texture as an iris-clip mask.
-   * @param {string} partId
-   * @returns {WebGLTexture|null}
-   */
-  getTexture(partId) {
-    return this._parts.get(partId)?.texture ?? null;
-  }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 

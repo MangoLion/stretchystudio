@@ -4,7 +4,7 @@
 
 Unlike traditional bone-based systems, Stretchy Studio focuses on a **timeline-first, direct-deformation workflow** reminiscent of After Effects, providing a lower learning curve while maintaining professional-grade flexibility.
 
-![Project Status](https://img.shields.io/badge/Status-M4_Complete-success?style=for-the-badge)
+![Project Status](https://img.shields.io/badge/Status-M5_Complete-success?style=for-the-badge)
 ![Tech Stack](https://img.shields.io/badge/Stack-React_|_WebGL2_|_Zustand-blue?style=for-the-badge)
 
 ---
@@ -18,8 +18,12 @@ Unlike traditional bone-based systems, Stretchy Studio focuses on a **timeline-f
 
 ### 📐 Precision Rigging
 - **Hierarchical Transforms**: Nested group structures with parent-child transform inheritance.
-- **Intuitive Gizmos**: World-space move and rotate handles for direct canvas manipulation.
+- **Intuitive Gizmos**: World-space move and rotate handles for direct canvas manipulation; rotatable skeletal arcs on animation timeline.
+- **Armature Auto-Rig**: DWPose ONNX-based skeleton detection for see-through PSD characters; joint-based bones as group nodes with pivotX/Y positioning.
+- **2D Iris Trackpad**: Dedicated 2D square trackpad UI for intuitive iris/eye movement; anchored optimally above the head to avoid face obstruction.
+- **Automatic Iris Clipping**: Advanced stencil-based masking keeps irides contained within eyewhites. Intelligent L/R matching handles split-eye characters out-of-the-box via name-suffix detection.
 - **Pivot Calibration**: Accurate pivot placement for natural rotations and scaling.
+- **Selection Isolation**: Selection and Gizmos automatically lock/hide when skeleton is active to prevent accidental layer changes during rigging.
 - **Alpha-Based Selection**: Pixel-perfect selection that works instantly on both textured quads and complex meshes.
 
 ### 🎬 Professional Timeline
@@ -109,4 +113,4 @@ src/
 
 - **Author**: Nguyen Phan
 - **License**: Private / Proprietary
-- **Version**: 0.4.0 (M4 Release)
+- **Version**: 0.5.0 (M5 Release)

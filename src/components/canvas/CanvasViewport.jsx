@@ -128,8 +128,6 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
   const editorState    = useEditorStore();
   const setBrush             = useEditorStore(s => s.setBrush);
   const setEditorMode        = useEditorStore(s => s.setEditorMode);
-  const setShowSkeleton      = useEditorStore(s => s.setShowSkeleton);
-  const setSkeletonEditMode  = useEditorStore(s => s.setSkeletonEditMode);
   const { setSelection, setView } = editorState;
   const { themeMode, osTheme } = useTheme();
 
@@ -155,7 +153,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const gl = canvas.getContext('webgl2', { alpha: false });
+    const gl = canvas.getContext('webgl2', { alpha: false, stencil: true });
     if (!gl) { console.error('[CanvasViewport] WebGL2 not supported'); return; }
 
     try {
@@ -190,7 +188,20 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
           }
         }
 
+        // Always apply draftPose mesh_verts for GPU upload — this handles elbow/knee skinning
+        // in staging mode where poseOverrides would otherwise be null.
+        if (anim.draftPose.size > 0) {
+          for (const [nodeId, draft] of anim.draftPose) {
+            if (!draft.mesh_verts) continue;
+            if (!poseOverrides) poseOverrides = new Map();
+            // Don't clobber transform overrides already set by animation mode above
+            const existing = poseOverrides.get(nodeId) ?? {};
+            if (!existing.mesh_verts) poseOverrides.set(nodeId, { ...existing, mesh_verts: draft.mesh_verts });
+          }
+        }
+
         sceneRef.current.draw(projectRef.current, editorRef.current, isDarkRef.current, poseOverrides);
+
 
         // Upload interpolated mesh vertices for parts with mesh_verts overrides,
         // and restore base mesh for parts whose override was removed since last frame.
@@ -265,8 +276,25 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
       const animId = anim.activeAnimationId ?? proj.animations[0]?.id;
       if (!animId) return;
 
-      const selectedIds = ed.selection;
+      let selectedIds = ed.selection;
       if (selectedIds.length === 0) return;
+
+      // Expand selection to include dependent parts for JS skinning joints
+      const JSKinningRoles = new Set(['leftElbow', 'rightElbow', 'leftKnee', 'rightKnee']);
+      const extraIds = new Set();
+      for (const selectedId of selectedIds) {
+        const node = proj.nodes.find(n => n.id === selectedId);
+        if (node && JSKinningRoles.has(node.boneRole)) {
+          for (const pt of proj.nodes) {
+            if (pt.type === 'part' && pt.mesh?.jointBoneId === selectedId) {
+              extraIds.add(pt.id);
+            }
+          }
+        }
+      }
+      if (extraIds.size > 0) {
+        selectedIds = Array.from(new Set([...selectedIds, ...extraIds]));
+      }
 
       const currentTimeMs = anim.currentTime;
 
@@ -376,6 +404,45 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
         if (node) {
           node.mesh = { vertices, uvs: Array.from(uvs), triangles, edgeIndices };
           
+          // Compute skin weights if this part belongs to a limb
+          const parentGroup = proj.nodes.find(n => n.id === node.parent);
+          if (parentGroup && parentGroup.boneRole) {
+            const roleMap = {
+              'leftArm': 'leftElbow', 'rightArm': 'rightElbow',
+              'leftLeg': 'leftKnee', 'rightLeg': 'rightKnee'
+            };
+            const childRole = roleMap[parentGroup.boneRole];
+            if (childRole) {
+              const jointBone = proj.nodes.find(n => n.parent === parentGroup.id && n.boneRole === childRole);
+              if (jointBone) {
+                const jx = jointBone.transform.pivotX;
+                const jy = jointBone.transform.pivotY;
+
+                // Build a direction vector from the shoulder (parentGroup pivot) → elbow (jointBone pivot).
+                // Projecting vertices onto this axis gives correct weights regardless of arm orientation.
+                const sx = parentGroup.transform.pivotX;
+                const sy = parentGroup.transform.pivotY;
+                const axDx = jx - sx;
+                const axDy = jy - sy;
+                const axLen = Math.sqrt(axDx * axDx + axDy * axDy) || 1;
+                const axX = axDx / axLen;
+                const axY = axDy / axLen;
+
+                // Blend zone: 40px centred on the elbow pivot along the arm axis
+                const blend = 40;
+                node.mesh.boneWeights = vertices.map(v => {
+                  // Signed distance of vertex past the elbow pivot (along arm axis)
+                  const proj2 = (v.x - jx) * axX + (v.y - jy) * axY;
+                  // proj2 < 0 → upper arm (rigid to shoulder), > 0 → lower arm (follows elbow)
+                  const w = proj2 / blend + 0.5;
+                  return Math.max(0, Math.min(1, w));
+                });
+                node.mesh.jointBoneId = jointBone.id;
+                console.log(`[Skinning] ${node.name} → ${childRole} (${vertices.length} verts, pivot ${jx.toFixed(0)},${jy.toFixed(0)})`);
+              }
+            }
+          }
+
           // If the pivot is at the default (0,0), auto-center it to the mesh bounds
           if (node.transform && node.transform.pivotX === 0 && node.transform.pivotY === 0) {
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -567,7 +634,6 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
           opacity:     layer.opacity,
           visible:     layer.visible,
           clip_mask:   null,
-          irisClipOf:  assignment?.irisClipOf ?? null,
           transform:   { ...DEFAULT_TRANSFORM(), pivotX: psdW / 2, pivotY: psdH / 2 },
           meshOpts:    null,
           mesh:        null,
@@ -719,6 +785,10 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
     }
 
     if (e.button !== 0) return;
+
+    // When skeleton is visible, we disable standard layer selection/dragging
+    // to focus exclusively on bone interactions.
+    if (editorRef.current.showSkeleton) return;
 
     const [worldX, worldY] = clientToCanvasSpace(canvas, e.clientX, e.clientY, view);
     const proj = projectRef.current;
@@ -1102,8 +1172,8 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
         />
       </svg>
 
-      {/* Transform gizmo SVG overlay */}
-      <GizmoOverlay />
+      {/* Transform gizmo SVG overlay — hidden when skeleton is showing */}
+      {!editorState.showSkeleton && <GizmoOverlay />}
 
       {/* Armature skeleton overlay (staging mode, when rig exists) */}
       <SkeletonOverlay
@@ -1112,35 +1182,6 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
         showSkeleton={editorState.showSkeleton}
         skeletonEditMode={editorState.skeletonEditMode}
       />
-
-      {/* Skeleton toolbar — shown in staging mode when rig is present */}
-      {editorState.editorMode === 'staging' &&
-       project.nodes.some(n => n.type === 'group' && n.boneRole) && (
-        <div className="absolute top-2 right-2 z-10 flex gap-1">
-          <button
-            onClick={() => setShowSkeleton(!editorState.showSkeleton)}
-            className={[
-              'px-2 py-1 text-[10px] rounded border transition-colors',
-              editorState.showSkeleton
-                ? 'bg-primary/20 border-primary/50 text-primary'
-                : 'bg-card border-border text-muted-foreground hover:text-foreground',
-            ].join(' ')}
-          >
-            {editorState.showSkeleton ? 'Hide Skeleton' : 'Show Skeleton'}
-          </button>
-          <button
-            onClick={() => setSkeletonEditMode(!editorState.skeletonEditMode)}
-            className={[
-              'px-2 py-1 text-[10px] rounded border transition-colors',
-              editorState.skeletonEditMode
-                ? 'bg-yellow-500/20 border-yellow-500/60 text-yellow-400'
-                : 'bg-card border-border text-muted-foreground hover:text-foreground',
-            ].join(' ')}
-          >
-            {editorState.skeletonEditMode ? 'Done Editing' : 'Edit Joints'}
-          </button>
-        </div>
-      )}
 
       {/* Editor mode toggle — top-left */}
       <div className="absolute top-2 left-2 z-10 flex rounded overflow-hidden border border-border shadow-sm text-[11px] font-medium">

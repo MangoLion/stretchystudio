@@ -6,7 +6,6 @@
  *   2. Mapping the 17 COCO body keypoints to named joints (neck, shoulders, hips, …)
  *   3. Building a bone hierarchy of group nodes with pivot points set from those joints
  *   4. Routing each semantic layer to its parent bone group
- *   5. Marking irides parts with `irisClipOf` so the renderer can mask them to eyewhite
  *
  * Bounding-box skeleton estimation is intentionally not implemented.
  * DWPose is the only skeleton source.
@@ -50,14 +49,6 @@ export const IRIS_TAGS = new Set([
   // V1/V2: the whole eye layer acts as an iris
   'eyes', 'eyel', 'eyer',
 ]);
-
-// Maps iris tag → corresponding eyewhite tag for mask clipping.
-const EYEWHITE_FOR_IRIS = {
-  'irides':   'eyewhite',
-  'irides-l': 'eyewhite-l',
-  'irides-r': 'eyewhite-r',
-  // V1/V2: no separate eyewhite → no clipping mask needed
-};
 
 /* ─── Layer tag matching ────────────────────────────────────────────────────── */
 
@@ -328,7 +319,7 @@ function boneForTag(tag, groups) {
  * @param {Function} uidFn     ID generator
  * @returns {{
  *   groupDefs: Array<{id,name,parentId,boneRole,pivotX,pivotY}>,
- *   assignments: Map<number, {parentGroupId, drawOrder, irisClipOf?}>
+ *   assignments: Map<number, {parentGroupId, drawOrder}>
  * }}
  */
 export function buildArmatureNodes(skeleton, groups, layers, partIds, uidFn) {
@@ -343,8 +334,12 @@ export function buildArmatureNodes(skeleton, groups, layers, partIds, uidFn) {
     leftArm:   groups.arms === 'split' || (groups.arms === 'partial' && layers.some(l => matchTag(l.name) === 'handwear-l')),
     rightArm:  groups.arms === 'split' || (groups.arms === 'partial' && layers.some(l => matchTag(l.name) === 'handwear-r')),
     bothArms:  groups.arms === 'merged',
+    leftElbow: groups.arms === 'split' || (groups.arms === 'partial' && layers.some(l => matchTag(l.name) === 'handwear-l')),
+    rightElbow:groups.arms === 'split' || (groups.arms === 'partial' && layers.some(l => matchTag(l.name) === 'handwear-r')),
     leftLeg:   groups.legs === 'split' || (groups.legs === 'partial' && layers.some(l => matchTag(l.name) === 'legwear-l')),
     rightLeg:  groups.legs === 'split' || (groups.legs === 'partial' && layers.some(l => matchTag(l.name) === 'legwear-r')),
+    leftKnee:  groups.legs === 'split' || (groups.legs === 'partial' && layers.some(l => matchTag(l.name) === 'legwear-l')),
+    rightKnee: groups.legs === 'split' || (groups.legs === 'partial' && layers.some(l => matchTag(l.name) === 'legwear-r')),
     bothLegs:  groups.legs === 'merged',
   };
 
@@ -356,9 +351,13 @@ export function buildArmatureNodes(skeleton, groups, layers, partIds, uidFn) {
     eyes:      kp.midEye,
     leftArm:   kp.lShoulder,
     rightArm:  kp.rShoulder,
+    leftElbow: kp.lElbow,
+    rightElbow:kp.rElbow,
     bothArms:  kp.shoulderMid,  // actual shoulder midpoint
     leftLeg:   kp.lHip,
     rightLeg:  kp.rHip,
+    leftKnee:  kp.lKnee,
+    rightKnee: kp.rKnee,
     bothLegs:  kp.pelvis,       // hip line
   };
 
@@ -370,14 +369,18 @@ export function buildArmatureNodes(skeleton, groups, layers, partIds, uidFn) {
     eyes:     needGroup.head  ? 'head'  : 'root',
     leftArm:  needGroup.torso ? 'torso' : 'root',
     rightArm: needGroup.torso ? 'torso' : 'root',
+    leftElbow: needGroup.leftArm ? 'leftArm' : (needGroup.torso ? 'torso' : 'root'),
+    rightElbow:needGroup.rightArm ? 'rightArm' : (needGroup.torso ? 'torso' : 'root'),
     bothArms: needGroup.torso ? 'torso' : 'root',
     leftLeg:  'root',
     rightLeg: 'root',
+    leftKnee: needGroup.leftLeg ? 'leftLeg' : 'root',
+    rightKnee: needGroup.rightLeg ? 'rightLeg' : 'root',
     bothLegs: 'root',
   };
 
   /* ── Create in parent-before-child order ── */
-  const CREATE_ORDER = ['root','torso','head','eyes','leftArm','rightArm','bothArms','leftLeg','rightLeg','bothLegs'];
+  const CREATE_ORDER = ['root','torso','head','eyes','leftArm','rightArm','leftElbow','rightElbow','bothArms','leftLeg','rightLeg','leftKnee','rightKnee','bothLegs'];
 
   const groupIds = {};
   const groupDefs = [];
@@ -410,20 +413,9 @@ export function buildArmatureNodes(skeleton, groups, layers, partIds, uidFn) {
     const resolvedBone = (needGroup[bone] && groupIds[bone]) ? bone : 'root';
     const parentGroupId = groupIds[resolvedBone] ?? null;
 
-    // Iris clipping: find the matching eyewhite part
-    let irisClipOf = null;
-    if (tag && IRIS_TAGS.has(tag)) {
-      const ewTag = EYEWHITE_FOR_IRIS[tag];
-      if (ewTag !== undefined) {
-        const ewIdx = tagToLayerIndex[ewTag];
-        if (ewIdx !== undefined) irisClipOf = partIds[ewIdx];
-      }
-    }
-
     assignments.set(i, {
       parentGroupId,
       drawOrder: layers.length - 1 - i,
-      irisClipOf,
     });
   });
 
@@ -442,8 +434,12 @@ export const SKELETON_CONNECTIONS = [
   ['head',  'eyes'],
   ['torso', 'leftArm'],
   ['torso', 'rightArm'],
+  ['leftArm', 'leftElbow'],
+  ['rightArm', 'rightElbow'],
   ['root',  'leftLeg'],
   ['root',  'rightLeg'],
+  ['leftLeg', 'leftKnee'],
+  ['rightLeg', 'rightKnee'],
   // merged variants
   ['torso', 'bothArms'],
   ['root',  'bothLegs'],

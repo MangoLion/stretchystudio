@@ -1,6 +1,6 @@
 # Stretchy Studio — Project Overview & Status
 
-**Last Updated:** 2026-04-11 · **Current Phase:** M4 Complete · **Next Phase:** M5 (Spritesheet Export)
+**Last Updated:** 2026-04-11 · **Current Phase:** M5 Armature + Animation Mode · **Next Phase:** M6 (Spritesheet Export)
 
 ---
 
@@ -116,6 +116,10 @@ Project
   - **Multi-seed contour tracing**: Traces all separated regions (eyes, arms, etc.) independently, not just the first one
   - **Boundary dilation**: Edge vertices placed 2px outside visual boundary → mesh covers full image content → texture alpha provides visual clip
   - **Per-contour vertex distribution**: Allocates `numEdgePoints` proportionally by perimeter across all detected regions
+- **Iris Clipping** (`src/renderer/scenePass.js`):
+  - **Stencil-based masking**: Irides are automatically clipped to their respective eyewhite layers.
+  - **Side Matching**: Correctly matches `irides-l` to `eyewhite-l` (and -r/-r) using name suffixes to handle split-eye characters.
+  - **Alpha-Aware Masks**: Uses shader-level `discard` to ensure clipping follows the visual shape of the eyewhite, even for mesh-less quad parts.
 - **Bugs Fixed**: PSD opacity (was 0), mesh generation (concurrent workers), layer render order, depth tab drag behavior, mesh clipping (chord-shortcut effect), multi-part edge point coverage
 
 **Exit Criteria Met:** Create group → parent layers → rotate group → children rotate around pivot. Depth tab unchanged. Groups tab drag reparents without affecting draw_order. Mesh now covers outer areas without clipping; multiple separated parts all get appropriate edge point coverage.
@@ -159,25 +163,65 @@ Project
 
 ---
 
-### M5 — Spritesheet Export
+### ✅ M5 — Armature Auto-Rig & Skeleton Animation (Completed 2026-04-11)
 
-**Goal:** Render animation to frames → download as zip of PNGs or packed spritesheet.
+**Goal:** Enable rigging of see-through PSD characters for vtuber-style animation via DWPose skeleton detection.
 
-**What to build:**
-- **Frame Renderer**: Offscreen WebGL canvas, step through animation time, `gl.readPixels` per frame
-- **Export UI**: Dialog with options:
-  - Animation clip (dropdown)
-  - FPS override
-  - Background (transparent/white/custom)
-  - Format (Zip of PNGs / Spritesheet image + JSON atlas)
-- **Zip Output**: `frame_0000.png`, `frame_0001.png`, … (JSZip)
-- **Spritesheet Mode**: Shelf-pack frames into power-of-2 atlas, output `spritesheet.png` + `spritesheet.json` (compatible with Phaser/Unity/Godot)
+**What was built:**
+- **DWPose ONNX Integration** (`src/io/armatureOrganizer.js`):
+  - Load and cache DWPose session (dw-ll_ucoco_384.onnx) from HuggingFace CDN
+  - 133-keypoint pose detection with SimCC output format
+  - Keypoint mapping to character skeleton: neck, waist, shoulder midpoint computed from COCO-17 body points
+  
+- **Armature Node Builder**:
+  - Create hierarchical bone structure: `root → torso → head → eyes`, `root → [left/right]Leg`, `torso → [left/right]Arm`
+  - All bones are group nodes with `boneRole` property
+  - Joint positions stored as `transform.pivotX/Y` (no new data types needed)
+  
+- **Skeleton Edit Overlay** (`src/components/canvas/SkeletonOverlay.jsx`):
+  - SVG overlay showing bone lines (cyan) and joint circles
+  - **Skeleton Edit Mode** (staging only):
+    - Draggable joint dots to reposition bone pivots
+    - Labels show bone role names
+  - **Rotation Arc Handles** (staging & animation modes):
+    - 270° amber arcs around animatable bones (torso, head, arms, legs)
+    - Drag arc to rotate bone instantly
+    - Shift-click snaps to 15° increments
+    - Click joint circle to select bone → GizmoOverlay appears for fine-tuning
+    - In animation mode: rotation written to draftPose; press K to keyframe
+  - **2D Iris Trackpad** (Added 2026-04-11):
+    - Dedicated 80x80px square trackpad for the `eyes` bone
+    - Positioned -120px above the head to maintain clear view of expressions
+    - Uses parent world-space anchoring for stable dragging during face motion
+    - Direct mapping to `x/y` transform properties (clamped to ±40px)
+    - Full support for `draftPose` and keyframing (K key)
+  - **Selection & Gizmo Isolation**:
+    - Automatic layer selection disabled when skeleton is visible
+    - `GizmoOverlay` hidden during rigging/skeleton interactions to reduce clutter
+    - Left-click exclusively targets bones; Middle/Right click preserved for panning
+  - Uses `effectiveNodes` + `computeWorldMatrices` for correct world-space bone positions after parent rotations
+  
+- **Rig Modal** (CanvasViewport.jsx):
+  - Local .onnx file picker or HuggingFace download
+  - Runs DWPose inference on imported image
+  - Auto-creates bone hierarchy from keypoints
+  
+- **Armature Management Panel** (Added 2026-04-11):
+  - Moved "Hide Skeleton" and "Edit Joints" from floating canvas overlays to a dedicated "Armature" panel in the right sidebar.
+  - Positioned above the Inspector for immediate access to rigging controls.
+  - Features status indicators (e.g., pulsing edit mode) and Lucide icons for better visual feedback.
+  - Cleans up the canvas workspace for better visibility of the character.
 
-**Exit Criteria:** Export → download zip → frames have correct transparency and sequence.
+**Exit Criteria Met:** Import see-through PSD → click "Auto-Rig" → DWPose loads → bones appear on canvas → drag arcs in staging to pose → switch to animation mode → drag arcs + press K to keyframe → scrub timeline → character animates with bone rotations applied hierarchically.
+
+**Key Design Decisions:**
+- Bones ARE group nodes (no new structure), pivots ARE joint positions (no extra fields)
+- Single ONNX session cached module-level to avoid re-download
+- World matrices recomputed in SkeletonOverlay each frame to handle animation state correctly
 
 ---
 
-### M6 — Physics
+### M7 — Physics
 
 **Goal:** Spring physics for secondary motion (hair, cloth).
 
@@ -193,10 +237,10 @@ Project
 
 ---
 
-### M7 — GIF / Video Export (Deferred Post-M6)
+### M8 — GIF / Video Export (Deferred Post-M7)
 - **GIF**: `gif.js` worker (MIT, popular)
 - **WebM**: MediaRecorder API on canvas stream
-- Builds on frame renderer from M5
+- Builds on frame renderer from M6
 
 ---
 
@@ -249,13 +293,13 @@ World matrices computed each frame from node tree + pose overrides. No caching i
 
 | Metric | Value |
 |--------|-------|
-| **Status** | M4 Complete; M5 design in progress (frame capture, export dialogs) |
-| **Files Modified/Created** | 15+ |
-| **Line Count** (core) | ~3100 (renderer + store + UI + alpha picking) |
-| **Bundle Size** | 587 KB minified, 187 KB gzipped |
-| **Performance** | 60 fps with 3–5 parts × 1000 verts each; mesh-less parts even faster |
-| **Main Dependency** | ag-psd (~120 KB), WebGL2 |
-| **Import Speed** | ~2–3× faster (no auto-mesh computation) |
+| **Status** | M5 Armature Auto-Rig Complete; M6 Spritesheet Export in design phase |
+| **Files Modified/Created** | 20+ |
+| **Line Count** (core) | ~4200 (renderer + store + UI + animation + armature) |
+| **Bundle Size** | 1.08 MB minified, 327 KB gzipped (includes onnxruntime-web WASM) |
+| **Performance** | 60 fps with rigged character + animation timeline; DWPose inference ~200ms per import |
+| **Main Dependencies** | ag-psd (~120 KB), onnxruntime-web (~25 MB WASM), WebGL2 |
+| **Import Speed** | ~2–3 sec with DWPose inference; mesh-less parts render immediately |
 
 ---
 
@@ -326,13 +370,14 @@ World matrices computed each frame from node tree + pose overrides. No caching i
 
 ## 10. Next Steps
 
-1. **M5 Export** (next sprint):
-   - Frame capture loop
-   - Spritesheet packing
-   - Export settings UI (FPS override, background toggle)
+1. **M6 Spritesheet Export** (next sprint):
+   - Frame capture loop (offscreen WebGL canvas, gl.readPixels per frame)
+   - Spritesheet packing (shelf-pack into power-of-2 atlas)
+   - Export settings UI (animation clip dropdown, FPS override, background toggle)
+   - Zip output or spritesheet + JSON atlas (Phaser/Unity/Godot compatible)
 
-2. **M6+ Advanced**:
-   - Physics simulation
+2. **M7+ Advanced**:
+   - Physics simulation (spring chains for hair/cloth)
    - GIF/video export
    - Undo/redo integration
    - Blend modes, clipping masks

@@ -409,6 +409,20 @@ function MeshPanel({ node, onRemesh, onDeleteMesh }) {
         </p>
       )}
 
+      {/* Skin weight warning — shown when mesh exists but has no bone weights */}
+      {node.mesh && !node.mesh.jointBoneId && (() => {
+        // Only show if this part's parent is a limb bone
+        const LIMB_ROLES = new Set(['leftArm', 'rightArm', 'leftLeg', 'rightLeg']);
+        const allNodes = useProjectStore.getState().project.nodes;
+        const parentNode = allNodes.find(n => n.id === node.parent);
+        if (!parentNode || !LIMB_ROLES.has(parentNode.boneRole)) return null;
+        return (
+          <p className="text-[11px] leading-relaxed rounded px-2 py-1.5 bg-amber-500/10 border border-amber-500/30 text-amber-400">
+            ⚠ Mesh was generated before rigging. Click <strong>Remesh</strong> to enable elbow/knee deformation.
+          </p>
+        );
+      })()}
+
       {/* Collapsible sliders section */}
       <div className="space-y-1">
         <button

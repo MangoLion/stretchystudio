@@ -25,6 +25,7 @@ export const useEditorStore = create((set) => ({
     showWireframe:   false,
     showVertices:    false,
     showEdgeOutline: false,
+    irisClipping:    true,
   },
 
   /** Default mesh generation parameters (used when no per-part override) */

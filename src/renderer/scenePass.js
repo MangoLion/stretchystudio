@@ -13,6 +13,23 @@ import { MESH_VERT, MESH_FRAG, WIRE_VERT, WIRE_FRAG } from './shaders/mesh.js';
 import { PartRenderer } from './partRenderer.js';
 import { BackgroundRenderer } from './backgroundRenderer.js';
 import { computeWorldMatrices, mat3Mul } from './transforms.js';
+import { matchTag } from '../io/psdOrganizer.js';
+
+/**
+ * Returns stencil info for iris/eyewhite clipping.
+ * Match irides to eyewhites by side suffixes (-l, -r, etc).
+ */
+function getIrisStencilInfo(name) {
+  const tag = matchTag(name);
+  if (tag !== 'irides' && tag !== 'eyewhite') return null;
+
+  const lower = name.toLowerCase();
+  let sideId = 1; // Default/Center
+  if (lower.includes('-l') || lower.includes('_l') || lower.includes(' l') || lower.endsWith(' l')) sideId = 2;
+  else if (lower.includes('-r') || lower.includes('_r') || lower.includes(' r') || lower.endsWith(' r')) sideId = 3;
+  
+  return { type: tag, id: sideId };
+}
 
 /**
  * Build the camera MVP: maps image-pixel world coords → NDC.
@@ -80,6 +97,11 @@ export class ScenePass {
 
     gl.viewport(0, 0, canvas.width, canvas.height);
     
+    // Clear stencil buffer (requires mask to be enabled)
+    gl.stencilMask(0xFF);
+    gl.clearStencil(0);
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+    
     const { zoom, panX, panY } = editor.view;
     this.bgRenderer.draw(zoom, panX, panY, canvas.width, canvas.height, isDark);
 
@@ -124,11 +146,28 @@ export class ScenePass {
       const uMvp     = this.meshUniforms('u_mvp');
       const uTexture = this.meshUniforms('u_texture');
       const uOpacity = this.meshUniforms('u_opacity');
-      const uHasMask = this.meshUniforms('u_hasMask');
-      const uMask    = this.meshUniforms('u_mask');
 
       for (const part of parts) {
         if (part.visible === false) continue;
+
+        // ── Stencil Clipping (Iris → Eyewhite) ──
+        const sInfo = overlays.irisClipping !== false ? getIrisStencilInfo(part.name) : null;
+        if (sInfo) {
+          gl.enable(gl.STENCIL_TEST);
+          if (sInfo.type === 'eyewhite') {
+            // Eyewhite acts as a mask: always pass, and replace stencil value with our side ID
+            gl.stencilFunc(gl.ALWAYS, sInfo.id, 0xFF);
+            gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+            gl.stencilMask(0xFF);
+          } else {
+            // Iris is clipped: only draw where stencil matches our side ID
+            gl.stencilFunc(gl.EQUAL, sInfo.id, 0xFF);
+            gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+            gl.stencilMask(0x00);
+          }
+        } else {
+          gl.disable(gl.STENCIL_TEST);
+        }
 
         const worldMatrix = worldMatrices.get(part.id);
         const partMvp     = worldMatrix ? mat3Mul(camera, worldMatrix) : camera;
@@ -138,36 +177,14 @@ export class ScenePass {
           ? baseOpacity * 0.5
           : baseOpacity;
 
-        // Iris clipping: if this part has an irisClipOf reference, bind the
-        // eyewhite texture as a second sampler so the fragment shader masks
-        // the iris to the eyewhite's alpha channel.
-        const maskTexture = part.irisClipOf
-          ? this.partRenderer.getTexture(part.irisClipOf)
-          : null;
-
-        if (maskTexture) {
-          gl.activeTexture(gl.TEXTURE1);
-          gl.bindTexture(gl.TEXTURE_2D, maskTexture);
-          gl.uniform1i(uMask, 1);
-          gl.uniform1i(uHasMask, 1);
-        } else {
-          gl.uniform1i(uHasMask, 0);
-        }
-
         this.partRenderer.drawPart(
           part.id,
           partMvp,
           effectiveOpacity,
           uMvp, uTexture, uOpacity
         );
-
-        if (maskTexture) {
-          // Clean up mask binding
-          gl.activeTexture(gl.TEXTURE1);
-          gl.bindTexture(gl.TEXTURE_2D, null);
-          gl.activeTexture(gl.TEXTURE0);
-        }
       }
+      gl.disable(gl.STENCIL_TEST);
     }
 
     // ── Overlay pass (wireframe / vertices / edge outline) ────────────────
