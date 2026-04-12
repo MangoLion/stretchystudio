@@ -279,7 +279,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
       const ed   = editorRef.current;
-      const anim = animRef.current;
+      const anim = useAnimationStore.getState();
       if (ed.editorMode !== 'animation') return;
 
       const proj = projectRef.current;
@@ -1203,6 +1203,9 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     if (dragRef.current) {
       dragRef.current = null;
       canvas.style.cursor = '';
+      if (editorRef.current.autoKeyframe && editorRef.current.editorMode === 'animation') {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'K', code: 'KeyK' }));
+      }
     }
   }, []);
 

@@ -117,6 +117,9 @@ function NodeDetails({ node }) {
   const setOpacity = useCallback((v) => {
     if (useEditorStore.getState().editorMode === 'animation') {
       useAnimationStore.getState().setDraftPose(node.id, { opacity: v });
+      if (useEditorStore.getState().autoKeyframe) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'K', code: 'KeyK' }));
+      }
     } else {
       updateProject((proj) => {
         const n = proj.nodes.find(x => x.id === node.id);
@@ -128,6 +131,9 @@ function NodeDetails({ node }) {
   const setVisible = useCallback((checked) => {
     if (useEditorStore.getState().editorMode === 'animation') {
       useAnimationStore.getState().setDraftPose(node.id, { visible: checked });
+      if (useEditorStore.getState().autoKeyframe) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'K', code: 'KeyK' }));
+      }
     } else {
       updateProject((proj) => {
         const n = proj.nodes.find(x => x.id === node.id);
@@ -169,6 +175,9 @@ function TransformPanel({ node, allNodes }) {
   const setTransformField = useCallback((field, value) => {
     if (useEditorStore.getState().editorMode === 'animation') {
       useAnimationStore.getState().setDraftPose(node.id, { [field]: value });
+      if (useEditorStore.getState().autoKeyframe) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'K', code: 'KeyK' }));
+      }
     } else {
       updateProject((proj) => {
         const n = proj.nodes.find(x => x.id === node.id);

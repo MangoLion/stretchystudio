@@ -331,6 +331,9 @@ export function GizmoOverlay() {
   function onDragEnd(e) {
     dragRef.current = null;
     e.currentTarget.releasePointerCapture(e.pointerId);
+    if (useEditorStore.getState().autoKeyframe && useEditorStore.getState().editorMode === 'animation') {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'K', code: 'KeyK' }));
+    }
   }
 
   // ── Render ──────────────────────────────────────────────────────────────

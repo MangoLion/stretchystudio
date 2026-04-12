@@ -403,6 +403,13 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
       }
       // Animation mode: leave draft pose in place — user commits with K key
     }
+
+    // Auto Keyframe trigger
+    if (drag && (drag.type === 'rotate' || drag.type === 'trackpad')) {
+      if (useEditorStore.getState().autoKeyframe && editorModeRef.current === 'animation') {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'K', code: 'KeyK' }));
+      }
+    }
   }, [updateProject]);
 
 

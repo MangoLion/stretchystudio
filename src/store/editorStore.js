@@ -62,6 +62,9 @@ export const useEditorStore = create((set) => ({
   /** Set of group IDs that are expanded in the Groups tab UI */
   expandedGroups: new Set(),
 
+  /** When true, property changes in animation mode automatically create/update keyframes */
+  autoKeyframe: false,
+
   setSelection: (nodeIds) => set((state) => ({
     selection: nodeIds,
     // Exit mesh edit mode if selection changes to a different node or clears
@@ -95,4 +98,5 @@ export const useEditorStore = create((set) => ({
     return { expandedGroups: new Set([...s.expandedGroups, id]) };
   }),
   setExpandedGroups:    (ids)      => set({ expandedGroups: new Set(ids) }),
+  setAutoKeyframe:      (on)       => set({ autoKeyframe: on }),
 }));

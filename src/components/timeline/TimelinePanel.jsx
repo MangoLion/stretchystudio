@@ -3,14 +3,15 @@ import { useAnimationStore } from '@/store/animationStore';
 import { useProjectStore } from '@/store/projectStore';
 import { useEditorStore } from '@/store/editorStore';
 import { HelpIcon } from '@/components/ui/help-icon';
+import { Disc } from 'lucide-react';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Constants
 ────────────────────────────────────────────────────────────────────────── */
 
-const LABEL_W   = 140;  // px — fixed node-name column width
-const ROW_H     = 22;   // px — height of each track row
-const RULER_H   = 20;   // px — height of the time ruler
+const LABEL_W = 140;  // px — fixed node-name column width
+const ROW_H = 22;   // px — height of each track row
+const RULER_H = 20;   // px — height of the time ruler
 const TRACK_PAD = 16;   // px — padding inside track area so edge frames don't clip
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -31,7 +32,7 @@ function frameToMs(frame, fps) { return (frame / Math.max(1, fps)) * 1000; }
 /* ──────────────────────────────────────────────────────────────────────────
    Transport button (play/pause/stop/loop icons)
 ────────────────────────────────────────────────────────────────────────── */
-function TransportBtn({ onClick, active, title, children }) {
+function TransportBtn({ onClick, active, title, children, className = '' }) {
   return (
     <button
       onClick={onClick}
@@ -39,8 +40,9 @@ function TransportBtn({ onClick, active, title, children }) {
       className={[
         'flex items-center justify-center w-6 h-6 rounded text-xs transition-colors',
         active
-          ? 'bg-primary text-primary-foreground'
+          ? (className.includes('bg-') ? '' : 'bg-primary text-primary-foreground')
           : 'text-muted-foreground hover:text-foreground hover:bg-muted',
+        className,
       ].join(' ')}
     >
       {children}
@@ -87,14 +89,16 @@ function NumField({ label, value, onChange, min, max, step = 1, className = '', 
    TimelinePanel — main component
 ────────────────────────────────────────────────────────────────────────── */
 export function TimelinePanel() {
-  const anim   = useAnimationStore();
-  const proj   = useProjectStore(s => s.project);
+  const anim = useAnimationStore();
+  const proj = useProjectStore(s => s.project);
   const update = useProjectStore(s => s.updateProject);
-  const sel    = useEditorStore(s => s.selection);
+  const sel = useEditorStore(s => s.selection);
+  const autoKeyframe = useEditorStore(s => s.autoKeyframe);
+  const setAutoKeyframe = useEditorStore(s => s.setAutoKeyframe);
 
   const trackAreaRef = useRef(null);
   const rulerRef = useRef(null);
-  
+
   // State for selection and clipboard
   const [selectedKeyframes, setSelectedKeyframes] = useState(new Set()); // Set of "nodeId:timeMs"
   const [selectionBox, setSelectionBox] = useState(null); // {x, y, w, h}
@@ -118,10 +122,10 @@ export function TimelinePanel() {
   );
 
   /* ── Derived values ─────────────────────────────────────────────────── */
-  const fps         = anim.fps;
+  const fps = anim.fps;
   const currentFrame = msToFrame(anim.currentTime, fps);
-  const endFrame    = Math.max(1, anim.endFrame);
-  const startFrame  = Math.max(0, anim.startFrame);
+  const endFrame = Math.max(1, anim.endFrame);
+  const startFrame = Math.max(0, anim.startFrame);
   const totalFrames = Math.max(endFrame - startFrame, 1);
 
   /* ── Auto-select animation when one exists ───────────────────────────── */
@@ -141,10 +145,10 @@ export function TimelinePanel() {
     update((p) => {
       p.animations.push({
         id,
-        name:     'Animation 1',
+        name: 'Animation 1',
         duration: 2000,
-        fps:      24,
-        tracks:   [],
+        fps: 24,
+        tracks: [],
       });
     });
     anim.setActiveAnimationId(id);
@@ -161,7 +165,7 @@ export function TimelinePanel() {
     // width is the inner width of ruler track (zoom factored in since ruler scales)
     const localX = clientX - rect.left - TRACK_PAD;
     const trackW = rect.width - 2 * TRACK_PAD;
-    const frac   = clamp(localX / trackW, 0, 1);
+    const frac = clamp(localX / trackW, 0, 1);
     return Math.round(startFrame + frac * totalFrames);
   }, [startFrame, totalFrames]);
 
@@ -178,7 +182,7 @@ export function TimelinePanel() {
     dragCtx.current = { type: 'playhead' };
     const frame = xToFrame(e.clientX);
     anim.seekFrame(clamp(frame, startFrame, endFrame));
-    
+
     const handleMove = (ev) => {
       const frame = xToFrame(ev.clientX);
       anim.seekFrame(clamp(frame, startFrame, endFrame));
@@ -195,16 +199,16 @@ export function TimelinePanel() {
   // Keyframe clicking & dragging
   const onKeyframePointerDown = useCallback((e, nodeId, timeMs) => {
     e.stopPropagation();
-    
+
     const id = `${nodeId}:${timeMs}`;
     let newSel = new Set(selectedKeyframes);
-    
+
     // Shift click toggles selection
     if (e.shiftKey) {
       if (newSel.has(id)) newSel.delete(id);
       else newSel.add(id);
       setSelectedKeyframes(newSel);
-    } 
+    }
     // Normal click selects only this, unless it's already selected
     else {
       if (!newSel.has(id)) {
@@ -219,7 +223,7 @@ export function TimelinePanel() {
       for (const track of animation.tracks) {
         for (const kf of track.keyframes) {
           if (newSel.has(`${track.nodeId}:${kf.time}`)) {
-             orig.push({ trackNodeId: track.nodeId, prop: track.property, origTimeMs: kf.time });
+            orig.push({ trackNodeId: track.nodeId, prop: track.property, origTimeMs: kf.time });
           }
         }
       }
@@ -250,18 +254,18 @@ export function TimelinePanel() {
               }
             }
           }
-           // Sort tracks by time to ensure play engine doesn't trip up
+          // Sort tracks by time to ensure play engine doesn't trip up
           a.tracks.forEach(t => t.keyframes.sort((k1, k2) => k1.time - k2.time));
         });
-        
+
         // Update selection to match new times
         if (nextSel.size > 0) {
-           setSelectedKeyframes(nextSel);
-           dragCtx.current.origKeyframes = dragCtx.current.origKeyframes.map(item => {
-               const newFrame = Math.max(0, msToFrame(item.origTimeMs, fps) + dragFrameDelta);
-               return { ...item, origTimeMs: frameToMs(newFrame, fps) };
-           });
-           dragCtx.current.startFrame += dragFrameDelta;
+          setSelectedKeyframes(nextSel);
+          dragCtx.current.origKeyframes = dragCtx.current.origKeyframes.map(item => {
+            const newFrame = Math.max(0, msToFrame(item.origTimeMs, fps) + dragFrameDelta);
+            return { ...item, origTimeMs: frameToMs(newFrame, fps) };
+          });
+          dragCtx.current.startFrame += dragFrameDelta;
         }
       }
     };
@@ -280,7 +284,7 @@ export function TimelinePanel() {
   const onTrackAreaPointerDown = useCallback((e) => {
     if (e.target.closest('.keyframe-diamond') || e.target.closest('.ruler-track')) return;
     if (!trackAreaRef.current) return;
-    
+
     // Deselect if clicking empty space without shift
     if (!e.shiftKey) setSelectedKeyframes(new Set());
 
@@ -296,16 +300,16 @@ export function TimelinePanel() {
     };
 
     setSelectionBox({
-      x: e.clientX - rect.left - LABEL_W + dragCtx.current.startScrollX, 
+      x: e.clientX - rect.left - LABEL_W + dragCtx.current.startScrollX,
       y: e.clientY - rect.top + dragCtx.current.startScrollY,
-      w: 0, 
+      w: 0,
       h: 0
     });
 
     const handleMove = (ev) => {
       const dx = ev.clientX - dragCtx.current.startX;
       const dy = ev.clientY - dragCtx.current.startY;
-      
+
       const scrollDx = trackAreaRef.current.scrollLeft - dragCtx.current.startScrollX;
       const scrollDy = trackAreaRef.current.scrollTop - dragCtx.current.startScrollY;
 
@@ -325,48 +329,48 @@ export function TimelinePanel() {
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
       dragCtx.current.type = null;
-      
+
       // Perform Intersection test
       if (animation) {
-         setSelectionBox(prevBox => {
-            if (prevBox && prevBox.w > 5 && prevBox.h > 5) {
-               let newSel = new Set(e.shiftKey ? selectedKeyframes : []);
-               
-               const trackRows = Array.from(new Map(
-                 animation.tracks.map(t => [t.nodeId, t])
-               ).keys());
+        setSelectionBox(prevBox => {
+          if (prevBox && prevBox.w > 5 && prevBox.h > 5) {
+            let newSel = new Set(e.shiftKey ? selectedKeyframes : []);
 
-               for (let rIndex = 0; rIndex < trackRows.length; rIndex++) {
-                 const nodeId = trackRows[rIndex];
-                 const rowY = RULER_H + (rIndex * ROW_H);
-                 
-                 // If row intersects box Y
-                 if (rowY + ROW_H > prevBox.y && rowY < prevBox.y + prevBox.h) {
-                    const tracksForNode = animation.tracks.filter(t => t.nodeId === nodeId);
-                    const times = [...new Set(tracksForNode.flatMap(t => t.keyframes.map(k => k.time)))];
-                    
-                    for (const timeMs of times) {
-                       const frame = msToFrame(timeMs, fps);
-                       const frac = (frame - startFrame) / totalFrames;
-                       if (frac >= 0 && frac <= 1) {
-                         const trackW = rulerRef.current?.getBoundingClientRect().width - 2 * TRACK_PAD;
-                         if (trackW) {
-                           const kfX = TRACK_PAD + (frac * trackW);
-                           // Intersect X
-                           if (kfX > prevBox.x && kfX < prevBox.x + prevBox.w) {
-                              newSel.add(`${nodeId}:${timeMs}`);
-                           }
-                         }
-                       }
+            const trackRows = Array.from(new Map(
+              animation.tracks.map(t => [t.nodeId, t])
+            ).keys());
+
+            for (let rIndex = 0; rIndex < trackRows.length; rIndex++) {
+              const nodeId = trackRows[rIndex];
+              const rowY = RULER_H + (rIndex * ROW_H);
+
+              // If row intersects box Y
+              if (rowY + ROW_H > prevBox.y && rowY < prevBox.y + prevBox.h) {
+                const tracksForNode = animation.tracks.filter(t => t.nodeId === nodeId);
+                const times = [...new Set(tracksForNode.flatMap(t => t.keyframes.map(k => k.time)))];
+
+                for (const timeMs of times) {
+                  const frame = msToFrame(timeMs, fps);
+                  const frac = (frame - startFrame) / totalFrames;
+                  if (frac >= 0 && frac <= 1) {
+                    const trackW = rulerRef.current?.getBoundingClientRect().width - 2 * TRACK_PAD;
+                    if (trackW) {
+                      const kfX = TRACK_PAD + (frac * trackW);
+                      // Intersect X
+                      if (kfX > prevBox.x && kfX < prevBox.x + prevBox.w) {
+                        newSel.add(`${nodeId}:${timeMs}`);
+                      }
                     }
-                 }
-               }
-               setSelectedKeyframes(newSel);
+                  }
+                }
+              }
             }
-            return null;
-         });
+            setSelectedKeyframes(newSel);
+          }
+          return null;
+        });
       } else {
-         setSelectionBox(null);
+        setSelectionBox(null);
       }
     };
     window.addEventListener('pointermove', handleMove);
@@ -377,7 +381,7 @@ export function TimelinePanel() {
   const copyKeyframe = useCallback((nodeId, timeMs) => {
     if (!animation) return;
     const props = {};
-    let easing  = 'linear';
+    let easing = 'linear';
 
     for (const track of animation.tracks) {
       if (track.nodeId !== nodeId) continue;
@@ -426,7 +430,7 @@ export function TimelinePanel() {
   /* ── Delete Selection ────────────────────────────────────────────────── */
   const deleteSelectedKeyframes = useCallback(() => {
     if (selectedKeyframes.size === 0) return;
-    
+
     update((p) => {
       const a = p.animations.find(x => x.id === anim.activeAnimationId);
       if (!a) return;
@@ -481,7 +485,7 @@ export function TimelinePanel() {
   const trackRows = useMemo(() => {
     if (!animation) return [];
     const nodeMap = new Map(proj.nodes.map(n => [n.id, n]));
-    const byNode  = new Map();
+    const byNode = new Map();
 
     for (const track of animation.tracks) {
       if (!byNode.has(track.nodeId)) byNode.set(track.nodeId, []);
@@ -491,10 +495,10 @@ export function TimelinePanel() {
     return Array.from(byNode.entries())
       .map(([nodeId, tracks]) => ({
         nodeId,
-        name:   nodeMap.get(nodeId)?.name ?? nodeId,
+        name: nodeMap.get(nodeId)?.name ?? nodeId,
         tracks,
         // Collect all unique keyframe times across all tracks for this node
-        times:  [...new Set(tracks.flatMap(t => t.keyframes.map(kf => kf.time)))].sort((a, b) => a - b),
+        times: [...new Set(tracks.flatMap(t => t.keyframes.map(kf => kf.time)))].sort((a, b) => a - b),
       }));
   }, [animation, proj.nodes]);
 
@@ -511,11 +515,11 @@ export function TimelinePanel() {
 
   /* ── Ruler tick marks ────────────────────────────────────────────────── */
   const rulerTicks = useMemo(() => {
-    const step   = totalFrames <= 24  ? 1
-                 : totalFrames <= 120 ? 5
-                 : totalFrames <= 480 ? 10
-                 : 24;
-    const ticks  = [];
+    const step = totalFrames <= 24 ? 1
+      : totalFrames <= 120 ? 5
+        : totalFrames <= 480 ? 10
+          : 24;
+    const ticks = [];
     for (let f = startFrame; f <= endFrame; f += step) {
       ticks.push(f);
     }
@@ -533,7 +537,7 @@ export function TimelinePanel() {
         {/* Stop */}
         <TransportBtn onClick={stop} title="Stop (return to start)">
           <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-            <rect x="1" y="1" width="8" height="8" rx="1"/>
+            <rect x="1" y="1" width="8" height="8" rx="1" />
           </svg>
         </TransportBtn>
 
@@ -541,12 +545,12 @@ export function TimelinePanel() {
         <TransportBtn onClick={togglePlay} active={anim.isPlaying} title={anim.isPlaying ? 'Pause' : 'Play'}>
           {anim.isPlaying ? (
             <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-              <rect x="1.5" y="1" width="2.5" height="8" rx="0.5"/>
-              <rect x="6"   y="1" width="2.5" height="8" rx="0.5"/>
+              <rect x="1.5" y="1" width="2.5" height="8" rx="0.5" />
+              <rect x="6" y="1" width="2.5" height="8" rx="0.5" />
             </svg>
           ) : (
             <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-              <polygon points="2,1 9,5 2,9"/>
+              <polygon points="2,1 9,5 2,9" />
             </svg>
           )}
         </TransportBtn>
@@ -554,8 +558,8 @@ export function TimelinePanel() {
         {/* Repeat */}
         <TransportBtn onClick={() => anim.setLoop(!anim.loop)} active={anim.loop} title="Repeat">
           <svg width="12" height="10" viewBox="0 0 12 10" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M1 3h8a2 2 0 0 1 0 4H3"/>
-            <polyline points="1,1 1,3 3,3"/>
+            <path d="M1 3h8a2 2 0 0 1 0 4H3" />
+            <polyline points="1,1 1,3 3,3" />
           </svg>
         </TransportBtn>
 
@@ -572,6 +576,16 @@ export function TimelinePanel() {
             <HelpIcon tip="When active, the animation will interpolate from the last keyframe back to the first keyframe for a seamless loop." />
           </div>
         </label>
+
+        {/* Auto Keyframe */}
+        <TransportBtn
+          onClick={() => setAutoKeyframe(!autoKeyframe)}
+          active={autoKeyframe}
+          className={autoKeyframe ? 'animate-recording' : ''}
+          title="Auto Keyframe: Automatically commit values to track when properties are changed"
+        >
+          <Disc size={14} strokeWidth={2} />
+        </TransportBtn>
 
         <div className="w-px h-4 bg-border mx-1" />
 
@@ -654,8 +668,8 @@ export function TimelinePanel() {
         </span>
       </div>
 
-      <div 
-        className="flex-1 overflow-auto relative select-none" 
+      <div
+        className="flex-1 overflow-auto relative select-none"
         ref={trackAreaRef}
         onPointerDown={onTrackAreaPointerDown}
       >
@@ -672,7 +686,7 @@ export function TimelinePanel() {
 
             {/* Selection Box */}
             {selectionBox && (
-              <div 
+              <div
                 className="absolute border border-primary bg-primary/20 pointer-events-none z-50 mix-blend-screen"
                 style={{
                   left: selectionBox.x + LABEL_W, top: selectionBox.y,
@@ -734,42 +748,42 @@ export function TimelinePanel() {
 
                 {/* Keyframe diamonds — padded inner wrapper */}
                 <div className="relative flex-1 overflow-visible">
-                <div className="absolute inset-y-0" style={{ left: TRACK_PAD, right: TRACK_PAD }}>
-                  {row.times.map(timeMs => {
-                    const frame = msToFrame(timeMs, fps);
-                    const frac  = (frame - startFrame) / totalFrames;
-                    if (frac < 0 || frac > 1) return null;
+                  <div className="absolute inset-y-0" style={{ left: TRACK_PAD, right: TRACK_PAD }}>
+                    {row.times.map(timeMs => {
+                      const frame = msToFrame(timeMs, fps);
+                      const frac = (frame - startFrame) / totalFrames;
+                      if (frac < 0 || frac > 1) return null;
 
-                    const isAtPlayhead = frame === currentFrame;
-                    const isSelected = selectedKeyframes.has(`${row.nodeId}:${timeMs}`);
+                      const isAtPlayhead = frame === currentFrame;
+                      const isSelected = selectedKeyframes.has(`${row.nodeId}:${timeMs}`);
 
-                    return (
-                      <div
-                        key={timeMs}
-                        title={`Frame ${frame} — click to select, drag to move`}
-                        onPointerDown={(e) => onKeyframePointerDown(e, row.nodeId, timeMs)}
-                        onContextMenu={e => {
-                          e.preventDefault();
-                          setContextMenu({
-                            x: e.clientX,
-                            y: e.clientY,
-                            nodeId: row.nodeId,
-                            timeMs
-                          });
-                        }}
-                        className={[
-                          'absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 cursor-ew-resize',
-                          'rotate-45 border transition-colors z-20 keyframe-diamond',
-                          isSelected ? 'bg-primary border-primary shadow-[0_0_4px_rgba(255,255,255,0.5)]'
-                            : isAtPlayhead
-                              ? 'bg-primary border-primary'
-                              : 'bg-background border-primary/60 hover:bg-primary/40',
-                        ].join(' ')}
-                        style={{ left: frameToPercentage(frame) }}
-                      />
-                    );
-                  })}
-                </div>
+                      return (
+                        <div
+                          key={timeMs}
+                          title={`Frame ${frame} — click to select, drag to move`}
+                          onPointerDown={(e) => onKeyframePointerDown(e, row.nodeId, timeMs)}
+                          onContextMenu={e => {
+                            e.preventDefault();
+                            setContextMenu({
+                              x: e.clientX,
+                              y: e.clientY,
+                              nodeId: row.nodeId,
+                              timeMs
+                            });
+                          }}
+                          className={[
+                            'absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 cursor-ew-resize',
+                            'rotate-45 border transition-colors z-20 keyframe-diamond',
+                            isSelected ? 'bg-primary border-primary shadow-[0_0_4px_rgba(255,255,255,0.5)]'
+                              : isAtPlayhead
+                                ? 'bg-primary border-primary'
+                                : 'bg-background border-primary/60 hover:bg-primary/40',
+                          ].join(' ')}
+                          style={{ left: frameToPercentage(frame) }}
+                        />
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             ))}

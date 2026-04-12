@@ -67,3 +67,13 @@
     @apply bg-background text-foreground;
   }
 }
+
+@keyframes blink-red {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.animate-recording {
+  animation: blink-red 1s infinite;
+  @apply bg-red-600 text-white !important;
+}
