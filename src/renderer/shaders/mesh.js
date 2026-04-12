@@ -29,8 +29,8 @@ out vec4 out_color;
 
 void main() {
   vec4 tex = texture(u_texture, v_uv);
-  if (tex.a < 0.1) discard;
-  out_color = vec4(tex.rgb, tex.a * u_opacity);
+  if (tex.a <= 0.001) discard;
+  out_color = tex * u_opacity;
 }
 `;
 
@@ -56,6 +56,6 @@ uniform vec4 u_color;
 out vec4 out_color;
 
 void main() {
-  out_color = u_color;
+  out_color = vec4(u_color.rgb * u_color.a, u_color.a);
 }
 `;

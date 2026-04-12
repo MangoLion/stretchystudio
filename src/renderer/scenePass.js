@@ -73,7 +73,7 @@ export class ScenePass {
     this.partRenderer = new PartRenderer(gl, this.meshProgram, this.wireProgram);
 
     this.gl.enable(gl.BLEND);
-    this.gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    this.gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   }
 
   /**
