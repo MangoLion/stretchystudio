@@ -63,7 +63,7 @@ export const useEditorStore = create((set) => ({
   expandedGroups: new Set(),
 
   /** When true, property changes in animation mode automatically create/update keyframes */
-  autoKeyframe: false,
+  autoKeyframe: true,
 
   setSelection: (nodeIds) => set((state) => ({
     selection: nodeIds,

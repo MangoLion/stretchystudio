@@ -11,7 +11,8 @@ import { Inspector } from '@/components/inspector/Inspector';
 import { TimelinePanel } from '@/components/timeline/TimelinePanel';
 import { AnimationListPanel } from '@/components/animation/AnimationListPanel';
 import { ArmaturePanel } from '@/components/armature/ArmaturePanel';
-import { Download, Upload, Palette, Sun, Moon, FileCog } from 'lucide-react';
+import { ExportModal } from '@/components/export/ExportModal';
+import { Save, FolderOpen, Palette, Sun, Moon, SquareChartGantt, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { HelpIcon } from '@/components/ui/help-icon';
 import { useProjectStore } from '@/store/projectStore';
@@ -59,6 +60,8 @@ export default function EditorLayout() {
 
   const saveRef = useRef(null);
   const loadRef = useRef(null);
+  const captureRef = useRef(null);
+  const [exportModalOpen, setExportModalOpen] = React.useState(false);
 
   const {
     themeMode, setThemeMode,
@@ -163,7 +166,7 @@ export default function EditorLayout() {
               onClick={() => saveRef.current?.()}
               title="Save project (.stretch)"
             >
-              <Download className="h-4 w-4" />
+              <Save className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
@@ -172,7 +175,16 @@ export default function EditorLayout() {
               onClick={() => loadRef.current?.()}
               title="Load project (.stretch)"
             >
-              <Upload className="h-4 w-4" />
+              <FolderOpen className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-full w-9 rounded-none border-l hover:bg-muted"
+              onClick={() => setExportModalOpen(true)}
+              title="Export frames"
+            >
+              <Download className="h-4 w-4" />
             </Button>
 
             {/* Canvas Properties Popover */}
@@ -184,7 +196,7 @@ export default function EditorLayout() {
                   className="h-full w-9 rounded-none border-l hover:bg-muted"
                   title="Canvas Properties"
                 >
-                  <FileCog className="h-4 w-4" />
+                  <SquareChartGantt className="h-4 w-4" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-64 p-4 space-y-3 shadow-2xl border-border/60">
@@ -413,6 +425,7 @@ export default function EditorLayout() {
                   deleteMeshRef={deleteMeshRef}
                   saveRef={saveRef}
                   loadRef={loadRef}
+                  captureRef={captureRef}
                 />
               </ResizablePanel>
               {isAnimationMode && (
@@ -458,6 +471,12 @@ export default function EditorLayout() {
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
+
+      <ExportModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        captureRef={captureRef}
+      />
     </div>
   );
 }

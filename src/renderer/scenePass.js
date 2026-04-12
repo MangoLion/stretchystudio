@@ -85,26 +85,36 @@ export class ScenePass {
    * @param {Map}     poseOverrides - optional Map<nodeId, {x?,y?,rotation?,scaleX?,scaleY?,opacity?}>
    *                                  from animationStore; applied on top of stored transforms
    */
-  draw(project, editor, isDark = true, poseOverrides = null) {
+  draw(project, editor, isDark = true, poseOverrides = null, { skipResize = false, exportMode = false } = {}) {
     const { gl } = this;
     const { canvas } = gl;
 
-    // Resize if needed
-    if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
-      canvas.width  = canvas.clientWidth;
-      canvas.height = canvas.clientHeight;
+    // Resize if needed (skipped during export to preserve export dimensions)
+    if (!skipResize) {
+      if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+        canvas.width  = canvas.clientWidth;
+        canvas.height = canvas.clientHeight;
+      }
     }
 
     gl.viewport(0, 0, canvas.width, canvas.height);
-    
+
     // Clear stencil buffer (requires mask to be enabled)
     gl.stencilMask(0xFF);
     gl.clearStencil(0);
     gl.clear(gl.STENCIL_BUFFER_BIT);
-    
+
+    // In export mode, clear to transparent and skip background renderer
+    if (exportMode) {
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+
     const { zoom, panX, panY } = editor.view;
     const canvasArea = project?.canvas ?? null;
-    this.bgRenderer.draw(zoom, panX, panY, canvas.width, canvas.height, isDark, canvasArea);
+    if (!exportMode) {
+      this.bgRenderer.draw(zoom, panX, panY, canvas.width, canvas.height, isDark, canvasArea);
+    }
 
     if (!project || project.nodes.length === 0) return;
 

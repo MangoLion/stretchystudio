@@ -2,8 +2,7 @@ import React, { useRef, useCallback, useEffect, useState, useMemo } from 'react'
 import { useAnimationStore } from '@/store/animationStore';
 import { useProjectStore } from '@/store/projectStore';
 import { useEditorStore } from '@/store/editorStore';
-import { HelpIcon } from '@/components/ui/help-icon';
-import { Disc } from 'lucide-react';
+import { Disc, RotateCcw, Repeat, SkipBack, SkipForward } from 'lucide-react';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Constants
@@ -65,11 +64,8 @@ function NumField({ label, value, onChange, min, max, step = 1, className = '', 
   };
 
   return (
-    <label className={`flex items-center gap-1 ${className}`}>
-      <div className="flex items-center gap-1">
-        <span className="text-[10px] text-muted-foreground whitespace-nowrap select-none">{label}</span>
-        {tip && <HelpIcon tip={tip} className="opacity-70 hover:opacity-100" />}
-      </div>
+    <label className={`flex items-center gap-1 ${className}`} title={tip}>
+      <span className="text-[10px] text-muted-foreground whitespace-nowrap select-none">{label}</span>
       <input
         type="number"
         value={local}
@@ -127,6 +123,7 @@ export function TimelinePanel() {
   const endFrame = Math.max(1, anim.endFrame);
   const startFrame = Math.max(0, anim.startFrame);
   const totalFrames = Math.max(endFrame - startFrame, 1);
+  const labelStep = totalFrames <= 48 ? 2 : totalFrames <= 120 ? 5 : totalFrames <= 240 ? 10 : totalFrames <= 480 ? 20 : 50;
 
   /* ── Auto-select animation when one exists ───────────────────────────── */
   useEffect(() => {
@@ -285,6 +282,13 @@ export function TimelinePanel() {
     if (e.target.closest('.keyframe-diamond') || e.target.closest('.ruler-track')) return;
     if (!trackAreaRef.current) return;
 
+    // Seek current frame to clicked position (if in track area, not labels)
+    const rulerRect = rulerRef.current?.getBoundingClientRect();
+    if (rulerRect && e.clientX >= rulerRect.left) {
+      const frame = xToFrame(e.clientX);
+      anim.seekFrame(clamp(frame, startFrame, endFrame));
+    }
+
     // Deselect if clicking empty space without shift
     if (!e.shiftKey) setSelectedKeyframes(new Set());
 
@@ -375,7 +379,7 @@ export function TimelinePanel() {
     };
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp);
-  }, [animation, startFrame, totalFrames, fps, selectedKeyframes]);
+  }, [animation, startFrame, endFrame, totalFrames, fps, selectedKeyframes, xToFrame, anim]);
 
   /* ── Clipboard Actions ──────────────────────────────────────────────── */
   const copyKeyframe = useCallback((nodeId, timeMs) => {
@@ -513,18 +517,18 @@ export function TimelinePanel() {
     anim.stop();
   }, [anim]);
 
+  const lastFrame = useCallback(() => {
+    anim.seekFrame(endFrame);
+  }, [anim, endFrame]);
+
   /* ── Ruler tick marks ────────────────────────────────────────────────── */
   const rulerTicks = useMemo(() => {
-    const step = totalFrames <= 24 ? 1
-      : totalFrames <= 120 ? 5
-        : totalFrames <= 480 ? 10
-          : 24;
     const ticks = [];
-    for (let f = startFrame; f <= endFrame; f += step) {
+    for (let f = Math.floor(startFrame); f <= Math.ceil(endFrame); f++) {
       ticks.push(f);
     }
     return ticks;
-  }, [startFrame, endFrame, totalFrames]);
+  }, [startFrame, endFrame]);
 
   /* ── No animation state ──────────────────────────────────────────────── */
   const hasAnimation = proj.animations.length > 0;
@@ -534,11 +538,9 @@ export function TimelinePanel() {
 
       {/* ── Transport bar ───────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-2 py-1 border-b border-border shrink-0 bg-card">
-        {/* Stop */}
-        <TransportBtn onClick={stop} title="Stop (return to start)">
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-            <rect x="1" y="1" width="8" height="8" rx="1" />
-          </svg>
+        {/* First Frame */}
+        <TransportBtn onClick={stop} title="First Frame">
+          <SkipBack size={14} />
         </TransportBtn>
 
         {/* Play / Pause */}
@@ -555,36 +557,14 @@ export function TimelinePanel() {
           )}
         </TransportBtn>
 
-        {/* Repeat */}
-        <TransportBtn onClick={() => anim.setLoop(!anim.loop)} active={anim.loop} title="Repeat">
-          <svg width="12" height="10" viewBox="0 0 12 10" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M1 3h8a2 2 0 0 1 0 4H3" />
-            <polyline points="1,1 1,3 3,3" />
-          </svg>
+        {/* Last Frame */}
+        <TransportBtn onClick={lastFrame} title="Last Frame">
+          <SkipForward size={14} />
         </TransportBtn>
 
-        {/* Loop Keyframes */}
-        <label className="flex items-center gap-1 ml-1 cursor-pointer" title="Interpolate from last keyframe to first keyframe when looping">
-          <input
-            type="checkbox"
-            checked={anim.loopKeyframes || false}
-            onChange={(e) => anim.setLoopKeyframes && anim.setLoopKeyframes(e.target.checked)}
-            className="w-3 h-3 accent-primary"
-          />
-          <div className="flex items-center gap-1">
-            <span className="text-[10px] text-muted-foreground whitespace-nowrap">Loop Keyframe</span>
-            <HelpIcon tip="When active, the animation will interpolate from the last keyframe back to the first keyframe for a seamless loop." />
-          </div>
-        </label>
-
-        {/* Auto Keyframe */}
-        <TransportBtn
-          onClick={() => setAutoKeyframe(!autoKeyframe)}
-          active={autoKeyframe}
-          className={autoKeyframe ? 'animate-recording' : ''}
-          title="Auto Keyframe: Automatically commit values to track when properties are changed"
-        >
-          <Disc size={14} strokeWidth={2} />
+        {/* Repeat */}
+        <TransportBtn onClick={() => anim.setLoop(!anim.loop)} active={anim.loop} title="Repeat">
+          <Repeat size={14} />
         </TransportBtn>
 
         <div className="w-px h-4 bg-border mx-1" />
@@ -626,11 +606,8 @@ export function TimelinePanel() {
         />
 
         {/* Speed slider */}
-        <label className="flex items-center gap-1 ml-1">
-          <div className="flex items-center gap-1">
-            <span className="text-[10px] text-muted-foreground whitespace-nowrap">Speed</span>
-            <HelpIcon tip="Playback speed multiplier." />
-          </div>
+        <label className="flex items-center gap-1 ml-1" title="Playback speed multiplier.">
+          <span className="text-[10px] text-muted-foreground whitespace-nowrap">Speed</span>
           <input
             type="range"
             min={0}
@@ -642,6 +619,27 @@ export function TimelinePanel() {
           />
           <span className="text-[10px] text-muted-foreground w-6">{anim.speed.toFixed(1)}×</span>
         </label>
+
+        <div className="w-px h-4 bg-border mx-1" />
+
+        {/* Loop Keyframes */}
+        <TransportBtn
+          onClick={() => anim.setLoopKeyframes && anim.setLoopKeyframes(!anim.loopKeyframes)}
+          active={anim.loopKeyframes}
+          title="Loop Keyframes: When active, the animation will interpolate from the last keyframe back to the first keyframe for a seamless loop."
+        >
+          <RotateCcw size={14} />
+        </TransportBtn>
+
+        {/* Auto Keyframe */}
+        <TransportBtn
+          onClick={() => setAutoKeyframe(!autoKeyframe)}
+          active={autoKeyframe}
+          className={autoKeyframe ? 'animate-recording' : ''}
+          title="Auto Keyframe: Automatically commit values to track when properties are changed"
+        >
+          <Disc size={14} strokeWidth={2} />
+        </TransportBtn>
 
         <span className="flex-1" />
 
@@ -708,14 +706,15 @@ export function TimelinePanel() {
               <div className="relative flex-1 overflow-hidden cursor-col-resize ruler-track" ref={rulerRef}>
                 <div className="absolute inset-y-0 pointer-events-none" style={{ left: TRACK_PAD, right: TRACK_PAD }}>
                   {rulerTicks.map(f => {
+                    const isLabel = f % labelStep === 0;
                     return (
                       <div
                         key={f}
                         className="absolute top-0 flex flex-col items-center"
                         style={{ left: frameToPercentage(f), transform: 'translateX(-50%)' }}
                       >
-                        <div className="w-px bg-border" style={{ height: f % (fps || 24) === 0 ? 8 : 4, marginTop: f % (fps || 24) === 0 ? 0 : 4 }} />
-                        {f % (fps || 24) === 0 && (
+                        <div className="w-px bg-border/40" style={{ height: isLabel ? 8 : 4, marginTop: isLabel ? 0 : 4 }} />
+                        {isLabel && (
                           <span className="text-[9px] text-muted-foreground leading-none mt-0.5">
                             {f}
                           </span>
@@ -724,6 +723,19 @@ export function TimelinePanel() {
                     );
                   })}
                 </div>
+              </div>
+            </div>
+
+            {/* Frame Dividers (Subtle Vertical Grid) */}
+            <div className="absolute inset-0 pointer-events-none" style={{ top: RULER_H, left: LABEL_W }}>
+              <div className="absolute inset-y-0" style={{ left: TRACK_PAD, right: TRACK_PAD }}>
+                {rulerTicks.map(f => (
+                  <div
+                    key={f}
+                    className="absolute top-0 bottom-0 w-px bg-border/10"
+                    style={{ left: frameToPercentage(f) }}
+                  />
+                ))}
               </div>
             </div>
 
@@ -783,6 +795,15 @@ export function TimelinePanel() {
                         />
                       );
                     })}
+
+                    {/* Phantom Loop Keyframe */}
+                    {anim.loopKeyframes && row.times.length > 0 && !row.times.includes(frameToMs(endFrame, fps)) && (
+                      <div
+                        title={`Loop wrap-around: references first keyframe at frame ${msToFrame(row.times[0], fps)}`}
+                        className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 rotate-45 border border-primary/40 border-dashed bg-transparent z-10 pointer-events-none"
+                        style={{ left: frameToPercentage(endFrame) }}
+                      />
+                    )}
                   </div>
                 </div>
               </div>

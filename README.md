@@ -35,6 +35,7 @@ Unlike traditional bone-based systems, Stretchy Studio focuses on a **timeline-f
 
 ### 🎬 Professional Timeline
 - **AE-Style Workflow**: Familiar keyframing system for transforms (X, Y, Rotation, Scale) and Mesh Vertices.
+- **Dynamic Defaults**: Includes **Auto Keyframe** (automatically create keyframes on property change) and **Loop Keyframes** (seamless looping between first and last keyframes) enabled by default.
 - **Multi-Clip Management**: Create multiple animation sequences (e.g., *Idle*, *Walk*, *Attack*) within a single project.
 - **Direct Vertex Keyframing**: "Warp" your illustrations by animating individual mesh vertices for organic motion.
 - **Smooth Interpolation**: High-performance rendering loop with real-time pose blending.

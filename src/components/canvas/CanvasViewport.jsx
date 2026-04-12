@@ -113,7 +113,7 @@ function basename(filename) {
    Component
 ────────────────────────────────────────────────────────────────────────── */
 
-export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, loadRef }) {
+export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, loadRef, captureRef }) {
   const canvasRef        = useRef(null);
   const sceneRef         = useRef(null);
   const rafRef           = useRef(null);
@@ -164,7 +164,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const gl = canvas.getContext('webgl2', { alpha: false, stencil: true });
+    const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false, stencil: true, preserveDrawingBuffer: true });
     if (!gl) { console.error('[CanvasViewport] WebGL2 not supported'); return; }
 
     try {
@@ -1284,6 +1284,77 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
   }, []);
 
   useEffect(() => { if (loadRef) loadRef.current = handleLoad; }, [loadRef, handleLoad]);
+
+  /* ── Export frame capture ────────────────────────────────────────────── */
+  const captureExportFrame = useCallback(({
+    animId, timeMs, bgEnabled, bgColor,
+    exportWidth, exportHeight,
+    format = 'png', quality = 0.92,
+    cropOffset = null,
+  }) => {
+    const canvas = canvasRef.current;
+    const scene  = sceneRef.current;
+    if (!canvas || !scene) return null;
+
+    // Set canvas to export dimensions
+    canvas.width  = exportWidth;
+    canvas.height = exportHeight;
+
+    // Mock editor: 1:1 pixel space, no overlays
+    const panX = cropOffset ? -cropOffset.x : 0;
+    const panY = cropOffset ? -cropOffset.y : 0;
+    const exportEditor = {
+      ...editorRef.current,
+      view: { zoom: 1, panX, panY },
+      selection: [],
+      meshEditMode: false,
+      overlays: {
+        showImage: true, showWireframe: false,
+        showVertices: false, showEdgeOutline: false,
+        irisClipping: editorRef.current.overlays?.irisClipping ?? true,
+      },
+    };
+
+    // Export project with overridden bg (always render transparent, composite later)
+    const exportProject = {
+      ...projectRef.current,
+      canvas: { ...projectRef.current.canvas, bgEnabled: false },
+    };
+
+    // Compute pose at timeMs
+    let poseOverrides = null;
+    if (animId) {
+      const anim = exportProject.animations.find(a => a.id === animId);
+      if (anim) poseOverrides = computePoseOverrides(anim, timeMs, false, anim.duration ?? 0);
+    }
+
+    // Render with export flags
+    scene.draw(exportProject, exportEditor, isDarkRef.current, poseOverrides, {
+      skipResize: true,
+      exportMode: true,
+    });
+
+    // Composite bg color if needed, otherwise capture transparent
+    const mimeType = format === 'jpg' ? 'image/jpeg' : format === 'webp' ? 'image/webp' : 'image/png';
+    let dataUrl;
+    if (bgEnabled && bgColor) {
+      const off = document.createElement('canvas');
+      off.width = exportWidth; off.height = exportHeight;
+      const ctx2d = off.getContext('2d');
+      ctx2d.fillStyle = bgColor;
+      ctx2d.fillRect(0, 0, exportWidth, exportHeight);
+      ctx2d.drawImage(canvas, 0, 0);
+      dataUrl = off.toDataURL(mimeType, quality);
+    } else {
+      dataUrl = canvas.toDataURL(mimeType, quality);
+    }
+
+    // Mark dirty for rAF to restore canvas size via resize guard
+    isDirtyRef.current = true;
+    return dataUrl;
+  }, []);
+
+  useEffect(() => { if (captureRef) captureRef.current = captureExportFrame; }, [captureRef, captureExportFrame]);
 
   /* ── Cursor style ────────────────────────────────────────────────────── */
   const toolCursor = 'crosshair';
