@@ -123,4 +123,18 @@ export const useProjectStore = create((set) => ({
     state.versionControl.transformVersion++;
     state.versionControl.textureVersion++;
   })),
+
+  /** Load a deserialized project from file */
+  loadProject: (projectData) => set(produce((state) => {
+    state.project.version = projectData.version;
+    state.project.canvas = projectData.canvas;
+    state.project.textures = projectData.textures;
+    state.project.nodes = projectData.nodes;
+    state.project.animations = projectData.animations ?? [];
+    state.project.parameters = projectData.parameters ?? [];
+    state.project.physics_groups = projectData.physics_groups ?? [];
+    state.versionControl.geometryVersion++;
+    state.versionControl.transformVersion++;
+    state.versionControl.textureVersion++;
+  })),
 }));

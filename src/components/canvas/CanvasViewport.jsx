@@ -24,6 +24,9 @@ import {
 import { computeWorldMatrices, mat3Inverse, mat3Identity } from '@/renderer/transforms';
 import { retriangulate } from '@/mesh/generate';
 import { GizmoOverlay } from '@/components/canvas/GizmoOverlay';
+import { saveProject, loadProject } from '@/io/projectFile';
+import { Download, Upload } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Helpers
@@ -1196,6 +1199,78 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
     }
   }, []);
 
+  /* ── Save/Load project ────────────────────────────────────────────────── */
+  const handleSave = useCallback(async () => {
+    try {
+      const blob = await saveProject(projectRef.current);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'project.stretch';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to save project:', err);
+    }
+  }, []);
+
+  const handleLoad = useCallback(async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.stretch';
+    input.onchange = async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const { project: loadedProject, images } = await loadProject(file);
+
+        // Destroy all GPU resources
+        if (sceneRef.current) {
+          sceneRef.current.parts.destroyAll();
+        }
+
+        // Load project into store
+        useProjectStore.getState().loadProject(loadedProject);
+
+        // Rebuild imageDataMapRef from loaded textures
+        imageDataMapRef.current.clear();
+        for (const [partId, img] of images) {
+          const off = document.createElement('canvas');
+          off.width = img.width;
+          off.height = img.height;
+          const ctx = off.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          const imageData = ctx.getImageData(0, 0, img.width, img.height);
+          imageDataMapRef.current.set(partId, imageData);
+        }
+
+        // Re-upload to GPU (use loadedProject, not projectRef which hasn't updated yet)
+        for (const node of loadedProject.nodes) {
+          if (node.type !== 'part') continue;
+          if (images.has(node.id)) {
+            sceneRef.current?.parts.uploadTexture(node.id, images.get(node.id));
+          }
+          if (node.mesh) {
+            sceneRef.current?.parts.uploadMesh(node.id, node.mesh);
+          } else if (node.imageWidth && node.imageHeight) {
+            sceneRef.current?.parts.uploadQuadFallback(node.id, node.imageWidth, node.imageHeight);
+          }
+        }
+
+        // Reset animation playback state
+        useAnimationStore.getState().resetPlayback?.();
+
+        // Reset editor selection
+        useEditorStore.getState().setSelection([]);
+
+        isDirtyRef.current = true;
+      } catch (err) {
+        console.error('Failed to load project:', err);
+      }
+    };
+    input.click();
+  }, []);
+
   /* ── Cursor style ────────────────────────────────────────────────────── */
   const toolCursor = 'crosshair';
 
@@ -1271,6 +1346,28 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef }) {
         >
           Animation
         </button>
+      </div>
+
+      {/* Save/Load buttons — top-left, next to mode toggle */}
+      <div className="absolute top-2 left-[165px] z-10 flex gap-1">
+        <Button
+          variant="outline"
+          size="icon"
+          className="h-7 w-7 bg-card"
+          onClick={handleSave}
+          title="Save project (.stretch)"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          className="h-7 w-7 bg-card"
+          onClick={handleLoad}
+          title="Load project (.stretch)"
+        >
+          <Upload className="h-3.5 w-3.5" />
+        </Button>
       </div>
 
       {/* Drop hint overlay */}
