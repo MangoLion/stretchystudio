@@ -98,6 +98,9 @@ export function computeAnalyticalBounds(project) {
  * Resolve which animations to export based on animTarget.
  */
 export function resolveAnimations(animations, animTarget, activeAnimationId) {
+  if (animTarget === 'staging') {
+    return [{ id: 'staging', name: 'staging', duration: 0 }];
+  }
   if (animTarget === 'current') {
     const active = animations.find(a => a.id === activeAnimationId) ?? animations[0];
     return active ? [active] : [];
@@ -116,6 +119,17 @@ export function resolveAnimations(animations, animTarget, activeAnimationId) {
  */
 export async function exportFrames({ frames, format, exportDest, onProgress }) {
   const ext = format === 'jpg' ? 'jpg' : format === 'webp' ? 'webp' : 'png';
+
+  // If only one frame, download directly instead of using ZIP/Folder
+  if (frames.length === 1) {
+    const frame = frames[0];
+    const filename = `${frame.animName}_frame_${String(frame.frameIndex + 1).padStart(4, '0')}.${ext}`;
+    const a = document.createElement('a');
+    a.href = frame.dataUrl;
+    a.download = filename;
+    a.click();
+    return;
+  }
 
   if (exportDest === 'folder') {
     await exportToFolder(frames, ext, onProgress);

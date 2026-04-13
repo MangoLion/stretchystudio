@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Progress } from '@/components/ui/progress';
+import { Slider } from '@/components/ui/slider';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 import { useProjectStore } from '@/store/projectStore';
@@ -53,12 +54,17 @@ export function ExportModal({ open, onClose, captureRef }) {
   // Sync defaults when modal opens
   useEffect(() => {
     if (!open) return;
+    if (project.animations.length === 0) {
+      setAnimTarget('staging');
+    } else if (animTarget === 'current' && !animStore.activeAnimationId) {
+      // If no active anim, just keep it on what it determines or staging if empty
+    }
     const activeAnim = project.animations.find(a => a.id === animStore.activeAnimationId);
     setExportFps(activeAnim?.fps ?? animStore.fps ?? 24);
     const hasBg = project.canvas.bgEnabled;
     setBgMode(hasBg ? 'custom' : 'transparent');
     setBgColor(project.canvas.bgColor ?? '#ffffff');
-  }, [open, project, animStore]);
+  }, [open, project, animStore, animTarget]);
 
   const handleExport = useCallback(async () => {
     if (!captureRef?.current) {
@@ -80,7 +86,7 @@ export function ExportModal({ open, onClose, captureRef }) {
       if (animsToExport.length === 0) {
         setProgress(null);
         setIsExporting(false);
-        alert('No animations to export');
+        alert('No target selected to export');
         return;
       }
 
@@ -164,7 +170,6 @@ export function ExportModal({ open, onClose, captureRef }) {
 
       setProgress(null);
       setIsExporting(false);
-      onClose();
     } catch (err) {
       console.error('[Export] Failed:', err);
       setProgress(null);
@@ -191,6 +196,32 @@ export function ExportModal({ open, onClose, captureRef }) {
   const showFrameInput = type === 'single_frame';
   const hasFolderSupport = 'showDirectoryPicker' in window;
   const showJpgWarning = format === 'jpg' && bgMode === 'transparent';
+
+  // Calculate range for frame slider
+  const targetAnims = resolveAnimations(
+    project.animations,
+    animTarget,
+    animStore.activeAnimationId
+  );
+  const maxDuration =
+    targetAnims.length > 0
+      ? Math.max(...targetAnims.map(a => a.duration ?? 2000))
+      : 0;
+  // Frames are calculated as durationMs / 1000 * fps
+  // Mimic computeExportFrameSpecs logic for consistency
+  const totalFrames =
+    targetAnims.length > 0
+      ? Math.max(1, Math.round((maxDuration / 1000) * exportFps))
+      : 0;
+  const maxFrameIndex = Math.max(0, totalFrames - 1);
+  const hasFrames = totalFrames > 0;
+
+  // Clamp frameIndex if range changes
+  useEffect(() => {
+    if (frameIndex > maxFrameIndex) {
+      setFrameIndex(maxFrameIndex);
+    }
+  }, [maxFrameIndex, frameIndex]);
 
   return (
     <Dialog open={open} onOpenChange={v => {
@@ -242,7 +273,8 @@ export function ExportModal({ open, onClose, captureRef }) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="current">Current</SelectItem>
+                  <SelectItem value="staging">Staging</SelectItem>
+                  {project.animations.length > 0 && <SelectItem value="current">Current</SelectItem>}
                   {project.animations.map(a => (
                     <SelectItem key={a.id} value={a.id}>
                       {a.name}
@@ -275,16 +307,30 @@ export function ExportModal({ open, onClose, captureRef }) {
             {showFrameInput && (
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Frame</Label>
-                <Input
-                  type="number"
-                  className="h-8 text-xs"
-                  value={frameIndex}
-                  min={0}
-                  onChange={e =>
-                    setFrameIndex(Math.max(0, Number(e.target.value)))
-                  }
-                  disabled={isExporting}
-                />
+                <div className="flex items-center gap-3">
+                  <Slider
+                    value={[frameIndex]}
+                    min={0}
+                    max={maxFrameIndex}
+                    step={1}
+                    onValueChange={([v]) => setFrameIndex(v)}
+                    disabled={isExporting || !hasFrames}
+                    className="flex-1"
+                  />
+                  <Input
+                    type="number"
+                    className="h-8 text-xs w-20"
+                    value={frameIndex}
+                    min={0}
+                    max={maxFrameIndex}
+                    onChange={e =>
+                      setFrameIndex(
+                        Math.min(maxFrameIndex, Math.max(0, Number(e.target.value)))
+                      )
+                    }
+                    disabled={isExporting || !hasFrames}
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -370,47 +416,49 @@ export function ExportModal({ open, onClose, captureRef }) {
           <Separator />
 
           {/* Section 4: Export destination */}
-          <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">Export to</Label>
-            <RadioGroup
-              value={exportDest}
-              onValueChange={setExportDest}
-              disabled={isExporting}
-              className="flex gap-4"
-            >
-              <div className="flex items-center gap-1.5">
-                <RadioGroupItem value="zip" id="dest-zip" disabled={isExporting} />
-                <Label
-                  htmlFor="dest-zip"
-                  className="text-xs cursor-pointer"
-                >
-                  ZIP file
-                </Label>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <RadioGroupItem
-                  value="folder"
-                  id="dest-folder"
-                  disabled={!hasFolderSupport || isExporting}
-                />
-                <Label
-                  htmlFor="dest-folder"
-                  className={cn(
-                    'text-xs cursor-pointer',
-                    (!hasFolderSupport || isExporting) &&
-                      'opacity-40 cursor-not-allowed'
-                  )}
-                >
-                  Folder
-                  {!hasFolderSupport && (
-                    <span className="ml-1 text-muted-foreground">
-                      (not supported)
-                    </span>
-                  )}
-                </Label>
-              </div>
-            </RadioGroup>
-          </div>
+          {type !== 'single_frame' && (
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">Export to</Label>
+              <RadioGroup
+                value={exportDest}
+                onValueChange={setExportDest}
+                disabled={isExporting}
+                className="flex gap-4"
+              >
+                <div className="flex items-center gap-1.5">
+                  <RadioGroupItem value="zip" id="dest-zip" disabled={isExporting} />
+                  <Label
+                    htmlFor="dest-zip"
+                    className="text-xs cursor-pointer"
+                  >
+                    ZIP file
+                  </Label>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <RadioGroupItem
+                    value="folder"
+                    id="dest-folder"
+                    disabled={!hasFolderSupport || isExporting}
+                  />
+                  <Label
+                    htmlFor="dest-folder"
+                    className={cn(
+                      'text-xs cursor-pointer',
+                      (!hasFolderSupport || isExporting) &&
+                        'opacity-40 cursor-not-allowed'
+                    )}
+                  >
+                    Folder
+                    {!hasFolderSupport && (
+                      <span className="ml-1 text-muted-foreground">
+                        (not supported)
+                      </span>
+                    )}
+                  </Label>
+                </div>
+              </RadioGroup>
+            </div>
+          )}
 
           {/* Progress bar */}
           {progress && (

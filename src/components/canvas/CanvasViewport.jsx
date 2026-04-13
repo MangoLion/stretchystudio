@@ -159,6 +159,30 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
   useEffect(() => { isDirtyRef.current = true; }, [project, isDark]);
 
+  const centerView = useCallback((contentW, contentH) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const vw = canvas.clientWidth;
+    const vh = canvas.clientHeight;
+    if (vw === 0 || vh === 0) return;
+
+    const zoom = editorRef.current.view.zoom;
+    setView({
+      panX: vw / 2 - (contentW / 2) * zoom,
+      panY: vh / 2 - (contentH / 2) * zoom,
+    });
+    isDirtyRef.current = true;
+  }, [setView]);
+
+  // Center view on initial mount
+  useEffect(() => {
+    const cw = projectRef.current.canvas.width;
+    const ch = projectRef.current.canvas.height;
+    // Use a small timeout to ensure the layout has settled and clientWidth/Height are correct
+    const timer = setTimeout(() => centerView(cw, ch), 50);
+    return () => clearTimeout(timer);
+  }, [centerView]);
+
   /* ── WebGL init ──────────────────────────────────────────────────────── */
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -558,6 +582,8 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
         ver.textureVersion++;
       });
 
+      centerView(img.width, img.height);
+
       const scene = sceneRef.current;
       if (scene) {
         scene.parts.uploadTexture(partId, img);
@@ -658,7 +684,9 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
       ver.textureVersion++;
     });
-  }, [updateProject]);
+
+    centerView(psdW, psdH);
+  }, [updateProject, centerView]);
 
   /* ── Wizard: cancel import (called by PsdImportWizard) ─────────────────── */
   const handleWizardCancel = useCallback(() => {
@@ -764,7 +792,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
       setPendingPsdFile(null);
     }
     setConfirmWipeOpen(false);
-  }, [pendingPsdFile, processPsdFile, resetProject]);
+  }, [pendingPsdFile, processPsdFile, resetProject, centerView]);
 
   /* ── Drag-and-drop ───────────────────────────────────────────────────── */
   const onDrop = useCallback((e) => {
@@ -1276,6 +1304,11 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
         useEditorStore.getState().setSelection([]);
 
         isDirtyRef.current = true;
+        
+        // Center the loaded project view
+        const cw = loadedProject.canvas?.width || 800;
+        const ch = loadedProject.canvas?.height || 600;
+        centerView(cw, ch);
       } catch (err) {
         console.error('Failed to load project:', err);
       }
@@ -1283,7 +1316,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     input.click();
   }, []);
 
-  useEffect(() => { if (loadRef) loadRef.current = handleLoad; }, [loadRef, handleLoad]);
+  useEffect(() => { if (loadRef) loadRef.current = handleLoad; }, [loadRef, handleLoad, centerView]);
 
   /* ── Export frame capture ────────────────────────────────────────────── */
   const captureExportFrame = useCallback(({
