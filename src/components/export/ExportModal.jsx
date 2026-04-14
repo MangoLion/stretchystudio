@@ -28,6 +28,7 @@ import {
   computeAnalyticalBounds,
   resolveAnimations,
 } from '@/io/exportAnimation';
+import { exportLive2D } from '@/io/live2d';
 
 export function ExportModal({ open, onClose, captureRef }) {
   // Form state
@@ -41,6 +42,8 @@ export function ExportModal({ open, onClose, captureRef }) {
   const [bgMode, setBgMode] = useState('transparent');
   const [bgColor, setBgColor] = useState('#ffffff');
   const [exportDest, setExportDest] = useState('zip');
+  const [modelName, setModelName] = useState('model');
+  const [atlasSize, setAtlasSize] = useState(2048);
 
   // Progress state
   const [progress, setProgress] = useState(null);
@@ -60,7 +63,55 @@ export function ExportModal({ open, onClose, captureRef }) {
     setBgColor(project.canvas.bgColor ?? '#ffffff');
   }, [open, project, animStore]);
 
+  const handleLive2DExport = useCallback(async () => {
+    setIsExporting(true);
+    setProgress({ current: 0, total: 1, label: 'Loading textures...' });
+
+    try {
+      // Load texture images from blob URLs
+      const images = new Map();
+      for (const tex of project.textures) {
+        if (!tex.source) continue;
+        await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => { images.set(tex.id, img); resolve(); };
+          img.onerror = reject;
+          img.src = tex.source;
+        });
+      }
+
+      const name = modelName.trim() || 'model';
+      const blob = await exportLive2D(project, images, {
+        modelName: name,
+        atlasSize,
+        exportMotions: true,
+        onProgress: (msg) =>
+          setProgress(p => (p ? { ...p, label: msg } : null)),
+      });
+
+      // Download the ZIP
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${name}_live2d.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      setProgress(null);
+      setIsExporting(false);
+      onClose();
+    } catch (err) {
+      console.error('[Live2D Export] Failed:', err);
+      setProgress(null);
+      setIsExporting(false);
+    }
+  }, [project, modelName, atlasSize, onClose]);
+
   const handleExport = useCallback(async () => {
+    if (type === 'live2d') {
+      return handleLive2DExport();
+    }
+
     if (!captureRef?.current) {
       console.error('[Export] captureRef not available');
       return;
@@ -185,12 +236,14 @@ export function ExportModal({ open, onClose, captureRef }) {
     bgColor,
     exportDest,
     onClose,
+    handleLive2DExport,
   ]);
 
+  const isLive2D = type === 'live2d';
   const showFpsInput = type === 'sequence';
   const showFrameInput = type === 'single_frame';
   const hasFolderSupport = 'showDirectoryPicker' in window;
-  const showJpgWarning = format === 'jpg' && bgMode === 'transparent';
+  const showJpgWarning = format === 'jpg' && bgMode === 'transparent' && !isLive2D;
 
   return (
     <Dialog open={open} onOpenChange={v => {
@@ -213,27 +266,66 @@ export function ExportModal({ open, onClose, captureRef }) {
                 <SelectContent>
                   <SelectItem value="sequence">Sequence</SelectItem>
                   <SelectItem value="single_frame">Single Frame</SelectItem>
+                  <SelectItem value="live2d">Live2D</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">Format</Label>
-              <Select value={format} onValueChange={setFormat} disabled={isExporting}>
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="png">PNG</SelectItem>
-                  <SelectItem value="webp">WEBP</SelectItem>
-                  <SelectItem value="jpg">JPG</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {!isLive2D && (
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Format</Label>
+                <Select value={format} onValueChange={setFormat} disabled={isExporting}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="png">PNG</SelectItem>
+                    <SelectItem value="webp">WEBP</SelectItem>
+                    <SelectItem value="jpg">JPG</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
 
-          <Separator />
+          {/* Live2D-specific options */}
+          {isLive2D && (
+            <>
+              <Separator />
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Model Name</Label>
+                  <Input
+                    className="h-8 text-xs"
+                    value={modelName}
+                    onChange={e => setModelName(e.target.value.replace(/[^a-zA-Z0-9_-]/g, '_'))}
+                    disabled={isExporting}
+                    placeholder="model"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Atlas Size</Label>
+                  <Select value={String(atlasSize)} onValueChange={v => setAtlasSize(Number(v))} disabled={isExporting}>
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1024">1024</SelectItem>
+                      <SelectItem value="2048">2048</SelectItem>
+                      <SelectItem value="4096">4096</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="text-xs text-muted-foreground px-2 py-1.5 rounded bg-muted/50">
+                  <span className="font-medium">Live2D Cubism V4.00</span> — runtime format for Ren'Py, game engines, and apps using Cubism SDK 4.0+. Not editable in Cubism Editor.
+                </div>
+              </div>
+            </>
+          )}
 
-          {/* Section 2: Animation target + timing */}
+          {!isLive2D && <Separator />}
+
+          {/* Sections 2-4: frame export options (hidden for Live2D) */}
+          {!isLive2D && (<>
           <div className="space-y-3">
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">Animation</Label>
@@ -411,6 +503,7 @@ export function ExportModal({ open, onClose, captureRef }) {
               </div>
             </RadioGroup>
           </div>
+          </>)}
 
           {/* Progress bar */}
           {progress && (
