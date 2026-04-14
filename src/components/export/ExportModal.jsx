@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Progress } from '@/components/ui/progress';
+import { Slider } from '@/components/ui/slider';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 import { useProjectStore } from '@/store/projectStore';
@@ -57,12 +58,17 @@ export function ExportModal({ open, onClose, captureRef }) {
   // Sync defaults when modal opens
   useEffect(() => {
     if (!open) return;
+    if (project.animations.length === 0) {
+      setAnimTarget('staging');
+    } else if (animTarget === 'current' && !animStore.activeAnimationId) {
+      // If no active anim, just keep it on what it determines or staging if empty
+    }
     const activeAnim = project.animations.find(a => a.id === animStore.activeAnimationId);
     setExportFps(activeAnim?.fps ?? animStore.fps ?? 24);
     const hasBg = project.canvas.bgEnabled;
     setBgMode(hasBg ? 'custom' : 'transparent');
     setBgColor(project.canvas.bgColor ?? '#ffffff');
-  }, [open, project, animStore]);
+  }, [open, project, animStore, animTarget]);
 
   const handleLive2DExport = useCallback(async () => {
     setIsExporting(true);
@@ -148,10 +154,27 @@ export function ExportModal({ open, onClose, captureRef }) {
         animStore.activeAnimationId
       );
 
+      if (type === 'spine') {
+        const { exportToSpine } = await import('@/io/exportSpine');
+        const zipBlob = await exportToSpine({
+          project,
+          onProgress: label => setProgress(p => p ? { ...p, label } : { current: 1, total: 1, label })
+        });
+        const url = URL.createObjectURL(zipBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'spine_export.zip';
+        a.click();
+        URL.revokeObjectURL(url);
+        setProgress(null);
+        setIsExporting(false);
+        return;
+      }
+
       if (animsToExport.length === 0) {
         setProgress(null);
         setIsExporting(false);
-        alert('No animations to export');
+        alert('No target selected to export');
         return;
       }
 
@@ -235,7 +258,6 @@ export function ExportModal({ open, onClose, captureRef }) {
 
       setProgress(null);
       setIsExporting(false);
-      onClose();
     } catch (err) {
       console.error('[Export] Failed:', err);
       setExportError(err.message || 'Export failed');
@@ -261,10 +283,37 @@ export function ExportModal({ open, onClose, captureRef }) {
   ]);
 
   const isLive2D = type === 'live2d' || type === 'live2d_project';
+  const isSpine = type === 'spine';
   const showFpsInput = type === 'sequence';
   const showFrameInput = type === 'single_frame';
   const hasFolderSupport = 'showDirectoryPicker' in window;
-  const showJpgWarning = format === 'jpg' && bgMode === 'transparent' && !isLive2D;
+  const showJpgWarning = format === 'jpg' && bgMode === 'transparent' && !isLive2D && !isSpine;
+
+  // Calculate range for frame slider
+  const targetAnims = resolveAnimations(
+    project.animations,
+    animTarget,
+    animStore.activeAnimationId
+  );
+  const maxDuration =
+    targetAnims.length > 0
+      ? Math.max(...targetAnims.map(a => a.duration ?? 2000))
+      : 0;
+  // Frames are calculated as durationMs / 1000 * fps
+  // Mimic computeExportFrameSpecs logic for consistency
+  const totalFrames =
+    targetAnims.length > 0
+      ? Math.max(1, Math.round((maxDuration / 1000) * exportFps))
+      : 0;
+  const maxFrameIndex = Math.max(0, totalFrames - 1);
+  const hasFrames = totalFrames > 0;
+
+  // Clamp frameIndex if range changes
+  useEffect(() => {
+    if (frameIndex > maxFrameIndex) {
+      setFrameIndex(maxFrameIndex);
+    }
+  }, [maxFrameIndex, frameIndex]);
 
   return (
     <Dialog open={open} onOpenChange={v => {
@@ -289,10 +338,11 @@ export function ExportModal({ open, onClose, captureRef }) {
                   <SelectItem value="single_frame">Single Frame</SelectItem>
                   <SelectItem value="live2d">Live2D Runtime</SelectItem>
                   <SelectItem value="live2d_project">Live2D Project</SelectItem>
+                  <SelectItem value="spine">Spine (4.0+)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            {!isLive2D && (
+            {!isLive2D && !isSpine && (
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Format</Label>
                 <Select value={format} onValueChange={setFormat} disabled={isExporting}>
@@ -362,7 +412,8 @@ export function ExportModal({ open, onClose, captureRef }) {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="current">Current</SelectItem>
+                  <SelectItem value="staging">Staging</SelectItem>
+                  {project.animations.length > 0 && <SelectItem value="current">Current</SelectItem>}
                   {project.animations.map(a => (
                     <SelectItem key={a.id} value={a.id}>
                       {a.name}
@@ -395,24 +446,50 @@ export function ExportModal({ open, onClose, captureRef }) {
             {showFrameInput && (
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Frame</Label>
-                <Input
-                  type="number"
-                  className="h-8 text-xs"
-                  value={frameIndex}
-                  min={0}
-                  onChange={e =>
-                    setFrameIndex(Math.max(0, Number(e.target.value)))
-                  }
-                  disabled={isExporting}
-                />
+                <div className="flex items-center gap-3">
+                  <Slider
+                    value={[frameIndex]}
+                    min={0}
+                    max={maxFrameIndex}
+                    step={1}
+                    onValueChange={([v]) => setFrameIndex(v)}
+                    disabled={isExporting || !hasFrames}
+                    className="flex-1"
+                  />
+                  <Input
+                    type="number"
+                    className="h-8 text-xs w-20"
+                    value={frameIndex}
+                    min={0}
+                    max={maxFrameIndex}
+                    onChange={e =>
+                      setFrameIndex(
+                        Math.min(maxFrameIndex, Math.max(0, Number(e.target.value)))
+                      )
+                    }
+                    disabled={isExporting || !hasFrames}
+                  />
+                </div>
               </div>
             )}
           </div>
 
           <Separator />
 
+          {isSpine && (
+            <div className="text-[11px] leading-relaxed text-muted-foreground bg-accent/20 p-3 rounded-md border border-accent/20 space-y-1.5">
+              <p className="font-semibold text-foreground/90">How to import to Spine:</p>
+              <ol className="list-decimal list-inside space-y-1 ml-0.5">
+                <li>Unzip the exported <strong>.zip</strong> file</li>
+                <li>In Spine, go to <strong>Spine menu &gt; Import Data...</strong></li>
+                <li>Select the <strong>.json</strong> file from the unzipped folder</li>
+              </ol>
+            </div>
+          )}
+
           {/* Section 3: Image area, scale, BG */}
-          <div className="space-y-3">
+          {!isSpine && (
+            <div className="space-y-3">
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">
                 Image Contains
@@ -486,51 +563,54 @@ export function ExportModal({ open, onClose, captureRef }) {
               </div>
             )}
           </div>
+        )}
 
-          <Separator />
+        <Separator />
 
           {/* Section 4: Export destination */}
-          <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">Export to</Label>
-            <RadioGroup
-              value={exportDest}
-              onValueChange={setExportDest}
-              disabled={isExporting}
-              className="flex gap-4"
-            >
-              <div className="flex items-center gap-1.5">
-                <RadioGroupItem value="zip" id="dest-zip" disabled={isExporting} />
-                <Label
-                  htmlFor="dest-zip"
-                  className="text-xs cursor-pointer"
-                >
-                  ZIP file
-                </Label>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <RadioGroupItem
-                  value="folder"
-                  id="dest-folder"
-                  disabled={!hasFolderSupport || isExporting}
-                />
-                <Label
-                  htmlFor="dest-folder"
-                  className={cn(
-                    'text-xs cursor-pointer',
-                    (!hasFolderSupport || isExporting) &&
-                      'opacity-40 cursor-not-allowed'
-                  )}
-                >
-                  Folder
-                  {!hasFolderSupport && (
-                    <span className="ml-1 text-muted-foreground">
-                      (not supported)
-                    </span>
-                  )}
-                </Label>
-              </div>
-            </RadioGroup>
-          </div>
+          {!isSpine && type !== 'single_frame' && (
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">Export to</Label>
+              <RadioGroup
+                value={exportDest}
+                onValueChange={setExportDest}
+                disabled={isExporting}
+                className="flex gap-4"
+              >
+                <div className="flex items-center gap-1.5">
+                  <RadioGroupItem value="zip" id="dest-zip" disabled={isExporting} />
+                  <Label
+                    htmlFor="dest-zip"
+                    className="text-xs cursor-pointer"
+                  >
+                    ZIP file
+                  </Label>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <RadioGroupItem
+                    value="folder"
+                    id="dest-folder"
+                    disabled={!hasFolderSupport || isExporting}
+                  />
+                  <Label
+                    htmlFor="dest-folder"
+                    className={cn(
+                      'text-xs cursor-pointer',
+                      (!hasFolderSupport || isExporting) &&
+                        'opacity-40 cursor-not-allowed'
+                    )}
+                  >
+                    Folder
+                    {!hasFolderSupport && (
+                      <span className="ml-1 text-muted-foreground">
+                        (not supported)
+                      </span>
+                    )}
+                  </Label>
+                </div>
+              </RadioGroup>
+            </div>
+          )}
           </>)}
 
           {/* Error display */}

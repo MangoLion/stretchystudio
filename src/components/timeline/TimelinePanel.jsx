@@ -2,7 +2,15 @@ import React, { useRef, useCallback, useEffect, useState, useMemo } from 'react'
 import { useAnimationStore } from '@/store/animationStore';
 import { useProjectStore } from '@/store/projectStore';
 import { useEditorStore } from '@/store/editorStore';
-import { Disc, RotateCcw, Repeat, SkipBack, SkipForward } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Disc, RotateCcw, Repeat, SkipBack, SkipForward, Copy, Clipboard, Trash2 } from 'lucide-react';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+  ContextMenuSeparator,
+} from '@/components/ui/context-menu';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Constants
@@ -48,6 +56,21 @@ function TransportBtn({ onClick, active, title, children, className = '' }) {
     </button>
   );
 }
+
+const CurveIcon = ({ type, className = '' }) => {
+  let pathD = '';
+  if (type === 'linear') pathD = 'M 2 14 L 14 2';
+  else if (type === 'ease-in') pathD = 'M 2 14 C 14 14, 14 14, 14 2';
+  else if (type === 'ease-out') pathD = 'M 2 14 C 2 2, 2 2, 14 2';
+  else if (type === 'stepped') pathD = 'M 2 14 L 14 14 L 14 2';
+  else pathD = 'M 2 14 C 8 14, 8 2, 14 2'; // ease-both / ease
+
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" className={cn('stroke-current fill-none', className)}>
+      <path d={pathD} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+};
 
 /* ──────────────────────────────────────────────────────────────────────────
    Tiny numeric field (for frame/fps/speed inputs)
@@ -472,17 +495,39 @@ export function TimelinePanel() {
   }, [deleteSelectedKeyframes, selectedKeyframes, copyKeyframe, pasteKeyframes]);
 
 
-  /* ── Context Menu state ─────────────────────────────────────────────── */
-  const [contextMenu, setContextMenu] = useState(null); // { x, y, nodeId, timeMs }
+  /* ── Context Menu Actions ────────────────────────────────────────── */
+  const setEasingAt = useCallback((nodeId, timeMs, easingType) => {
+    const targetId = `${nodeId}:${timeMs}`;
+    const applyTo = selectedKeyframes.has(targetId) ? selectedKeyframes : new Set([targetId]);
+    update((p) => {
+      const a = p.animations.find(x => x.id === anim.activeAnimationId);
+      if (!a) return;
+      for (const track of a.tracks) {
+        for (const kf of track.keyframes) {
+          if (applyTo.has(`${track.nodeId}:${kf.time}`)) {
+             kf.easing = easingType;
+          }
+        }
+      }
+    });
+  }, [selectedKeyframes, anim.activeAnimationId, update]);
 
-  const closeContextMenu = useCallback(() => setContextMenu(null), []);
-
-  useEffect(() => {
-    if (contextMenu) {
-      window.addEventListener('click', closeContextMenu);
-      return () => window.removeEventListener('click', closeContextMenu);
+  const removeKeyframeAt = useCallback((nodeId, timeMs) => {
+    const targetId = `${nodeId}:${timeMs}`;
+    if (selectedKeyframes.has(targetId)) {
+      deleteSelectedKeyframes();
+    } else {
+      update((p) => {
+        const a = p.animations.find(x => x.id === anim.activeAnimationId);
+        if (!a) return;
+        for (const track of a.tracks) {
+          if (track.nodeId !== nodeId) continue;
+          track.keyframes = track.keyframes.filter(kf => kf.time !== timeMs);
+        }
+        a.tracks = a.tracks.filter(t => t.keyframes.length > 0);
+      });
     }
-  }, [contextMenu, closeContextMenu]);
+  }, [selectedKeyframes, deleteSelectedKeyframes, anim.activeAnimationId, update]);
 
   /* ── Build track rows ────────────────────────────────────────────────── */
   // Group tracks by nodeId, show one row per node that has any keyframe.
@@ -497,13 +542,28 @@ export function TimelinePanel() {
     }
 
     return Array.from(byNode.entries())
-      .map(([nodeId, tracks]) => ({
-        nodeId,
-        name: nodeMap.get(nodeId)?.name ?? nodeId,
-        tracks,
-        // Collect all unique keyframe times across all tracks for this node
-        times: [...new Set(tracks.flatMap(t => t.keyframes.map(kf => kf.time)))].sort((a, b) => a - b),
-      }));
+      .map(([nodeId, tracks]) => {
+        const times = [...new Set(tracks.flatMap(t => t.keyframes.map(kf => kf.time)))].sort((a, b) => a - b);
+        
+        const easingByTime = {};
+        for (const time of times) {
+          for (const t of tracks) {
+             const kf = t.keyframes.find(k => k.time === time);
+             if (kf) { 
+               easingByTime[time] = kf.easing || 'ease-both'; 
+               break; 
+             }
+          }
+        }
+
+        return {
+          nodeId,
+          name: nodeMap.get(nodeId)?.name ?? nodeId,
+          tracks,
+          times,
+          easingByTime
+        };
+      });
   }, [animation, proj.nodes]);
 
   /* ── Transport ───────────────────────────────────────────────────────── */
@@ -761,6 +821,67 @@ export function TimelinePanel() {
                 {/* Keyframe diamonds — padded inner wrapper */}
                 <div className="relative flex-1 overflow-visible">
                   <div className="absolute inset-y-0" style={{ left: TRACK_PAD, right: TRACK_PAD }}>
+                    {/* Curve interpolation lines */}
+                    <svg className="absolute inset-y-0 w-full h-full pointer-events-none z-10" viewBox="0 0 100 10" preserveAspectRatio="none">
+                      {row.times.map((tA, i) => {
+                         if (i >= row.times.length - 1) return null;
+                         const tB = row.times[i+1];
+                         const fA = msToFrame(tA, fps);
+                         const fB = msToFrame(tB, fps);
+                         const perA = (fA - startFrame) / totalFrames * 100;
+                         const perB = (fB - startFrame) / totalFrames * 100;
+                         if (perA > 100 || perB < 0) return null; // out of view
+                         
+                         const easing = row.easingByTime[tA];
+                         let pathD = `M ${Math.max(-10, perA)} 5 L ${Math.min(110, perB)} 5`; // simple fallback
+                         
+                         if (easing === 'stepped') {
+                           pathD = `M ${perA} 8 L ${perB} 8 L ${perB} 2`;
+                         } else if (easing === 'linear') {
+                           pathD = `M ${perA} 8 L ${perB} 2`;
+                         } else if (easing === 'ease-in') {
+                           pathD = `M ${perA} 8 C ${perB} 8, ${perB} 8, ${perB} 2`;
+                         } else if (easing === 'ease-out') {
+                           pathD = `M ${perA} 8 C ${perA} 2, ${perA} 2, ${perB} 2`;
+                         } else {
+                           // ease, ease-both, Array, or undefined defaults to smooth (ease-both)
+                           pathD = `M ${perA} 8 C ${perA + (perB-perA)*0.5} 8, ${perA + (perB-perA)*0.5} 2, ${perB} 2`;
+                         }
+                         
+                         return <path key={`curve-${tA}`} d={pathD} fill="none" stroke="currentColor" strokeWidth="2" opacity="0.4" vectorEffect="non-scaling-stroke" strokeLinecap="round" strokeLinejoin="round" />
+                      })}
+                      
+                      {/* Loop segment curve */}
+                      {anim.loopKeyframes && row.times.length > 0 && (() => {
+                        const tLast = row.times[row.times.length - 1];
+                        const tEnd = frameToMs(endFrame, fps);
+                        if (tLast >= tEnd) return null;
+
+                        const fA = msToFrame(tLast, fps);
+                        const fB = endFrame;
+                        const perA = (fA - startFrame) / totalFrames * 100;
+                        const perB = (fB - startFrame) / totalFrames * 100;
+                        
+                        // We wrap back to the value of the first keyframe (represented as height 2)
+                        const easing = row.easingByTime[tLast] || 'ease-both';
+                        let pathD;
+                        if (easing === 'stepped') {
+                          pathD = `M ${perA} 8 L ${perB} 8 L ${perB} 2`;
+                        } else if (easing === 'linear') {
+                          pathD = `M ${perA} 8 L ${perB} 2`;
+                        } else if (easing === 'ease-in') {
+                          pathD = `M ${perA} 8 C ${perB} 8, ${perB} 8, ${perB} 2`;
+                        } else if (easing === 'ease-out') {
+                          pathD = `M ${perA} 8 C ${perA} 2, ${perA} 2, ${perB} 2`;
+                        } else {
+                          // ease, ease-both, Array, or undefined defaults to smooth (ease-both)
+                          pathD = `M ${perA} 8 C ${perA + (perB-perA)*0.5} 8, ${perA + (perB-perA)*0.5} 2, ${perB} 2`;
+                        }
+                        
+                        return <path key="curve-loop" d={pathD} fill="none" stroke="currentColor" strokeWidth="2" opacity="0.25" strokeDasharray="4 2" vectorEffect="non-scaling-stroke" strokeLinecap="round" strokeLinejoin="round" />
+                      })()}
+                    </svg>
+
                     {row.times.map(timeMs => {
                       const frame = msToFrame(timeMs, fps);
                       const frac = (frame - startFrame) / totalFrames;
@@ -770,29 +891,59 @@ export function TimelinePanel() {
                       const isSelected = selectedKeyframes.has(`${row.nodeId}:${timeMs}`);
 
                       return (
-                        <div
-                          key={timeMs}
-                          title={`Frame ${frame} — click to select, drag to move`}
-                          onPointerDown={(e) => onKeyframePointerDown(e, row.nodeId, timeMs)}
-                          onContextMenu={e => {
-                            e.preventDefault();
-                            setContextMenu({
-                              x: e.clientX,
-                              y: e.clientY,
-                              nodeId: row.nodeId,
-                              timeMs
-                            });
-                          }}
-                          className={[
-                            'absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 cursor-ew-resize',
-                            'rotate-45 border transition-colors z-20 keyframe-diamond',
-                            isSelected ? 'bg-primary border-primary shadow-[0_0_4px_rgba(255,255,255,0.5)]'
-                              : isAtPlayhead
-                                ? 'bg-primary border-primary'
-                                : 'bg-background border-primary/60 hover:bg-primary/40',
-                          ].join(' ')}
-                          style={{ left: frameToPercentage(frame) }}
-                        />
+                        <ContextMenu key={timeMs}>
+                          <ContextMenuTrigger>
+                            <div
+                              title={`Frame ${frame} — click to select, drag to move`}
+                              onPointerDown={(e) => onKeyframePointerDown(e, row.nodeId, timeMs)}
+                              className={[
+                                'absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-3 h-3 cursor-ew-resize',
+                                'rotate-45 border transition-colors z-20 keyframe-diamond',
+                                isSelected ? 'bg-primary border-primary shadow-[0_0_4px_rgba(255,255,255,0.5)]'
+                                  : isAtPlayhead
+                                    ? 'bg-primary border-primary'
+                                    : 'bg-background border-primary/60 hover:bg-primary/40',
+                              ].join(' ')}
+                              style={{ left: frameToPercentage(frame) }}
+                            />
+                          </ContextMenuTrigger>
+                          <ContextMenuContent>
+                            <ContextMenuItem onSelect={() => copyKeyframe(row.nodeId, timeMs)}>
+                              <Copy className="w-3 h-3 mr-2 opacity-70" />
+                              Copy
+                            </ContextMenuItem>
+                            <ContextMenuItem disabled={!clipboard} onSelect={pasteKeyframes}>
+                              <Clipboard className="w-3 h-3 mr-2 opacity-70" />
+                              Paste
+                            </ContextMenuItem>
+                            <ContextMenuSeparator />
+                            <ContextMenuItem onSelect={() => setEasingAt(row.nodeId, timeMs, 'linear')}>
+                              <CurveIcon type="linear" className="mr-2 opacity-70" />
+                              Linear
+                            </ContextMenuItem>
+                            <ContextMenuItem onSelect={() => setEasingAt(row.nodeId, timeMs, 'ease-both')}>
+                              <CurveIcon type="ease-both" className="mr-2 opacity-70" />
+                              Ease Both
+                            </ContextMenuItem>
+                            <ContextMenuItem onSelect={() => setEasingAt(row.nodeId, timeMs, 'ease-in')}>
+                              <CurveIcon type="ease-in" className="mr-2 opacity-70" />
+                              Ease In
+                            </ContextMenuItem>
+                            <ContextMenuItem onSelect={() => setEasingAt(row.nodeId, timeMs, 'ease-out')}>
+                              <CurveIcon type="ease-out" className="mr-2 opacity-70" />
+                              Ease Out
+                            </ContextMenuItem>
+                            <ContextMenuItem onSelect={() => setEasingAt(row.nodeId, timeMs, 'stepped')}>
+                              <CurveIcon type="stepped" className="mr-2 opacity-70" />
+                              Stepped
+                            </ContextMenuItem>
+                            <ContextMenuSeparator />
+                            <ContextMenuItem className="text-destructive" onSelect={() => removeKeyframeAt(row.nodeId, timeMs)}>
+                              <Trash2 className="w-3 h-3 mr-2 opacity-70" />
+                              Remove
+                            </ContextMenuItem>
+                          </ContextMenuContent>
+                        </ContextMenu>
                       );
                     })}
 
@@ -832,58 +983,7 @@ export function TimelinePanel() {
       </div>
 
       {/* ── Keyframe Context Menu ───────────────────────────────────────── */}
-      {contextMenu && (
-        <div
-          className="fixed z-[100] bg-popover border border-border rounded shadow-lg py-1 min-w-[100px] text-[11px]"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-muted transition-colors"
-            onClick={() => {
-              copyKeyframe(contextMenu.nodeId, contextMenu.timeMs);
-              closeContextMenu();
-            }}
-          >
-            Copy
-          </button>
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-muted transition-colors disabled:opacity-50"
-            disabled={!clipboard}
-            onClick={() => {
-              pasteKeyframes();
-              closeContextMenu();
-            }}
-          >
-            Paste
-          </button>
-          <div className="h-px bg-border my-1" />
-          <button
-            className="w-full text-left px-3 py-1.5 hover:bg-muted transition-colors text-destructive"
-            onClick={() => {
-              // If the menu target was part of selection, delete selection.
-              // Otherwise, just delete the target keyframe.
-              const targetId = `${contextMenu.nodeId}:${contextMenu.timeMs}`;
-              if (selectedKeyframes.has(targetId)) {
-                deleteSelectedKeyframes();
-              } else {
-                update((p) => {
-                  const a = p.animations.find(x => x.id === anim.activeAnimationId);
-                  if (!a) return;
-                  for (const track of a.tracks) {
-                    if (track.nodeId !== contextMenu.nodeId) continue;
-                    track.keyframes = track.keyframes.filter(kf => kf.time !== contextMenu.timeMs);
-                  }
-                  a.tracks = a.tracks.filter(t => t.keyframes.length > 0);
-                });
-              }
-              closeContextMenu();
-            }}
-          >
-            Remove
-          </button>
-        </div>
-      )}
+      {/* Context menu replaced by Radix UI ContextMenu above */}
     </div>
   );
 }

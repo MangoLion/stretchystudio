@@ -316,10 +316,10 @@ export default function EditorLayout() {
                     }}
                     aria-label="Theme mode"
                   >
-                    <ToggleGroupItem value="light" aria-label="Light mode" className="h-8 w-8">
+                    <ToggleGroupItem value="light" aria-label="Light mode">
                       <Sun className="h-4 w-4" />
                     </ToggleGroupItem>
-                    <ToggleGroupItem value="dark" aria-label="Dark mode" className="h-8 w-8">
+                    <ToggleGroupItem value="dark" aria-label="Dark mode">
                       <Moon className="h-4 w-4" />
                     </ToggleGroupItem>
                   </ToggleGroup>

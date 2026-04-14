@@ -49,6 +49,11 @@ Unlike traditional bone-based systems, Stretchy Studio focuses on a **timeline-f
 - **Direct Vertex Keyframing**: "Warp" your illustrations by animating individual mesh vertices for organic motion.
 - **Smooth Interpolation**: High-performance rendering loop with real-time pose blending.
 
+### 📤 Versatile Export
+- **PNG/WEBP/JPG Sequences**: High-performance frame-by-frame export with custom scale, FPS, and background options (Transparent/Solid/Grid).
+- **Single Frame Export**: Capture the current timeline state as a high-resolution image with a dedicated frame-index slider.
+- **Spine 4.0 JSON**: Industrial-grade export for game engines. Maps Stretchy Studio hierarchies, setup poses, and animation timelines (Translate, Rotate, Scale, Opacity) to the Spine 4.0 schema. Includes automatic image packing and technical coordinate mapping (Y-up conversion).
+
 ### ⚡ Optimized Engine
 - **WebGL2 Renderer**: Custom rendering pipeline using VAOs, batching, and hierarchical matrix math for 60 FPS performance.
 - **Pose Separation**: Playback state is decoupled from the project model, ensuring a non-destructive animation workflow.
@@ -139,4 +144,4 @@ src/
 
 - **Author**: Nguyen Phan
 - **License**: Private / Proprietary
-- **Version**: 0.5.0 (M5 Release)
+- **Version**: 0.6.0 (Spine Export Release)

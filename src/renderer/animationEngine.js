@@ -13,9 +13,58 @@ function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 
-function easeInOut(t) {
-  // Cubic ease in-out
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+function bezier1D(t, startTension, endTension) {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const mt = 1 - t;
+  const mt2 = mt * mt;
+  return 3 * mt2 * t * startTension + 3 * mt * t2 * endTension + t3;
+}
+
+/**
+ * 1D Cubic Bezier Solver (X -> Y)
+ */
+export function evaluateCubicBezier(x, cx1, cy1, cx2, cy2) {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  if (cx1 === cy1 && cx2 === cy2) return x; // Linear shortcut
+
+  // Binary search for t given x
+  let lower = 0;
+  let upper = 1;
+  let t = x;
+  
+  for (let i = 0; i < 12; i++) {
+    const currentX = bezier1D(t, cx1, cx2);
+    if (Math.abs(currentX - x) < 0.0001) break;
+    if (x > currentX) lower = t;
+    else upper = t;
+    t = (lower + upper) / 2;
+  }
+  
+  return bezier1D(t, cy1, cy2);
+}
+
+/**
+ * Evaluate a given easing shape
+ */
+export function evaluateEasing(t, easing) {
+  if (easing === 'linear') return t;
+  if (!easing || easing === 'ease' || easing === 'ease-both') {
+    // defaults to standard smooth curve (Ease Both)
+    return evaluateCubicBezier(t, 0.42, 0, 0.58, 1);
+  }
+  if (easing === 'ease-in') {
+    return evaluateCubicBezier(t, 0.42, 0, 1, 1);
+  }
+  if (easing === 'ease-out') {
+    return evaluateCubicBezier(t, 0, 0, 0.58, 1);
+  }
+  if (easing === 'stepped') return 0;
+  if (Array.isArray(easing) && easing.length === 4) {
+    return evaluateCubicBezier(t, easing[0], easing[1], easing[2], easing[3]);
+  }
+  return t;
 }
 
 /**
@@ -33,7 +82,7 @@ export function interpolateTrack(keyframes, timeMs, loopKeyframes = false, endMs
       const kLast = keyframes[keyframes.length - 1];
       const kFirst = keyframes[0];
       const t = (timeMs - kLast.time) / (endMs - kLast.time);
-      const te = kLast.easing === 'ease' ? easeInOut(t) : t;
+      const te = evaluateEasing(t, kLast.easing);
       return lerp(kLast.value, kFirst.value, te);
     }
     return keyframes[keyframes.length - 1].value;
@@ -51,8 +100,7 @@ export function interpolateTrack(keyframes, timeMs, loopKeyframes = false, endMs
   const kA = keyframes[lo];
   const kB = keyframes[lo + 1];
   const t  = (timeMs - kA.time) / (kB.time - kA.time);
-  // easing is on the destination keyframe
-  const te = kB.easing === 'ease' ? easeInOut(t) : t;
+  const te = evaluateEasing(t, kA.easing); // Easing from the *start* keyframe of the segment
 
   if (typeof kA.value === 'boolean') {
     // Discrete step interpolation for boolean properties like 'visible'
@@ -75,7 +123,7 @@ function interpolateMeshVerts(keyframes, timeMs, loopKeyframes = false, endMs = 
       const kLast = keyframes[keyframes.length - 1];
       const kFirst = keyframes[0];
       const t = (timeMs - kLast.time) / (endMs - kLast.time);
-      const te = kLast.easing === 'ease' ? easeInOut(t) : t;
+      const te = evaluateEasing(t, kLast.easing);
 
       return kLast.value.map((vA, i) => {
         const vB = kFirst.value[i];
@@ -97,7 +145,7 @@ function interpolateMeshVerts(keyframes, timeMs, loopKeyframes = false, endMs = 
   const kA = keyframes[lo];
   const kB = keyframes[lo + 1];
   const t  = (timeMs - kA.time) / (kB.time - kA.time);
-  const te = kB.easing === 'ease' ? easeInOut(t) : t;
+  const te = evaluateEasing(t, kA.easing); // Easing from the *start* keyframe of the segment
 
   return kA.value.map((vA, i) => {
     const vB = kB.value[i];
@@ -140,7 +188,7 @@ export function computePoseOverrides(animation, timeMs, loopKeyframes = false, e
  * Insert or update a keyframe in a track's keyframe array (mutates in place).
  * Keeps keyframes sorted by time.
  */
-export function upsertKeyframe(keyframes, timeMs, value, easing = 'linear') {
+export function upsertKeyframe(keyframes, timeMs, value, easing = 'ease-both') {
   const existing = keyframes.find(kf => kf.time === timeMs);
   if (existing) {
     existing.value  = value;
