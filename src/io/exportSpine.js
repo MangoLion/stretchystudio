@@ -224,17 +224,19 @@ function buildSpineJson(project) {
               const time = kf.time / 1000;
               let entry = boneEntry.translate.find(e => Math.abs(e.time - time) < 0.001);
               if (!entry) { entry = { time, x: 0, y: 0 }; boneEntry.translate.push(entry); }
-              // Delta from setup pose, with Y flipped
               const setup = node.transform[track.property] ?? 0;
               const delta = kf.value - setup;
               if (track.property === 'x') entry.x = delta;
               else entry.y = -delta;
+              applySpineCurve(entry, kf);
             }
           } else if (track.property === 'rotation') {
             if (!boneEntry.rotate) boneEntry.rotate = [];
             for (const kf of track.keyframes) {
               const setup = node.transform.rotation ?? 0;
-              boneEntry.rotate.push({ time: kf.time / 1000, value: -(kf.value - setup) });
+              const entry = { time: kf.time / 1000, value: -(kf.value - setup) };
+              applySpineCurve(entry, kf);
+              boneEntry.rotate.push(entry);
             }
           } else if (track.property === 'scaleX' || track.property === 'scaleY') {
             if (!boneEntry.scale) boneEntry.scale = [];
@@ -245,6 +247,7 @@ function buildSpineJson(project) {
               const setup = node.transform[track.property] ?? 1;
               if (track.property === 'scaleX') entry.x = kf.value / setup;
               else entry.y = kf.value / setup;
+              applySpineCurve(entry, kf);
             }
           }
         }
@@ -264,7 +267,9 @@ function buildSpineJson(project) {
             if (!slotEntry.rgba) slotEntry.rgba = [];
             for (const kf of track.keyframes) {
               const hexA = Math.round(kf.value * 255).toString(16).padStart(2, '0');
-              slotEntry.rgba.push({ time: kf.time / 1000, color: `ffffff${hexA}` });
+              const entry = { time: kf.time / 1000, color: `ffffff${hexA}` };
+              applySpineCurve(entry, kf);
+              slotEntry.rgba.push(entry);
             }
             slotEntry.rgba.sort((a, b) => a.time - b.time);
           }
@@ -290,4 +295,21 @@ function sanitizeName(name) {
     .replace(/^_+|_+$/g, '');
   return s === 'root' ? 'rig_root' : s;
 }
+
+function applySpineCurve(entry, kf) {
+  if (kf.easing === 'linear') return; 
+  if (kf.easing === 'stepped') {
+    entry.curve = 'stepped';
+  } else if (Array.isArray(kf.easing) && kf.easing.length === 4) {
+    entry.curve = kf.easing;
+  } else if (kf.easing === 'ease-in') {
+    entry.curve = [0.42, 0, 1, 1];
+  } else if (kf.easing === 'ease-out') {
+    entry.curve = [0, 0, 0.58, 1];
+  } else {
+    // Default or 'ease-both' / 'ease' -> Ease Both
+    entry.curve = [0.42, 0, 0.58, 1];
+  }
+}
+
 
