@@ -149,8 +149,13 @@ export async function exportLive2DProject(project, images, opts = {}) {
 
   onProgress(`Preparing ${meshParts.length} meshes...`);
 
-  // Collect groups (for part hierarchy in .cmo3)
-  const groups = project.nodes.filter(n => n.type === 'group');
+  // Collect groups (for part hierarchy + deformers in .cmo3)
+  const groups = project.nodes.filter(n => n.type === 'group').map(g => ({
+    id: g.id,
+    name: g.name ?? g.id,
+    parent: g.parent ?? null,
+    transform: g.transform ?? { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 },
+  }));
 
   const meshes = [];
   for (let i = 0; i < meshParts.length; i++) {
@@ -170,9 +175,11 @@ export async function exportLive2DProject(project, images, opts = {}) {
     onProgress(`Encoding texture ${i + 1}/${meshParts.length}...`);
 
     // For .cmo3: render full canvas-sized PNG (CLayeredImage covers entire canvas)
+    // Mesh vertices and textures are already in canvas space (PSD layers are canvas-sized)
     const pngData = await renderPartToCanvasPng(img, fullW, fullH, canvasW, canvasH);
 
     // Flatten vertices: Array<{x,y}> → [x0,y0, x1,y1, ...]
+    // Vertices are already in canvas-space coordinates
     const vertices = [];
     for (const v of mesh.vertices) {
       vertices.push(v.x, v.y);
@@ -207,7 +214,13 @@ export async function exportLive2DProject(project, images, opts = {}) {
   }
 
   if (meshes.length === 0) {
-    throw new Error('No visible parts with meshes found for export');
+    const partCount = meshParts.length;
+    const texCount = images.size;
+    throw new Error(
+      partCount === 0
+        ? 'No visible parts with meshes found. Generate meshes before exporting.'
+        : `Found ${partCount} parts but no matching textures (${texCount} textures loaded). Check that parts have textureId matching a texture.`
+    );
   }
 
   onProgress(`Generating .cmo3 (${meshes.length} meshes)...`);
@@ -225,10 +238,18 @@ export async function exportLive2DProject(project, images, opts = {}) {
 }
 
 /**
- * Render a part's full texture onto a canvas-sized PNG.
+ * Render a part's full texture onto a canvas-sized PNG with world transform applied.
  * For .cmo3, each layer covers the full canvas (like a PSD layer).
+ * The transform places the image in its correct world-space position.
+ *
+ * @param {HTMLImageElement} img
+ * @param {number} srcW - Source image width
+ * @param {number} srcH - Source image height
+ * @param {number} canvasW - Canvas width
+ * @param {number} canvasH - Canvas height
+ * @param {number[]} wm - 3x3 column-major world matrix [m0,m1,0, m3,m4,0, m6,m7,1]
  */
-async function renderPartToCanvasPng(img, srcW, srcH, canvasW, canvasH) {
+async function renderPartToCanvasPngTransformed(img, srcW, srcH, canvasW, canvasH, wm) {
   const canvas = typeof OffscreenCanvas !== 'undefined'
     ? new OffscreenCanvas(canvasW, canvasH)
     : document.createElement('canvas');
@@ -237,8 +258,11 @@ async function renderPartToCanvasPng(img, srcW, srcH, canvasW, canvasH) {
     canvas.height = canvasH;
   }
   const ctx = canvas.getContext('2d');
-  // Draw the source image at its natural size (top-left aligned)
+  // Apply world transform: canvas 2D setTransform(a, b, c, d, e, f)
+  // maps from column-major [m0,m1,0, m3,m4,0, m6,m7,1]
+  ctx.setTransform(wm[0], wm[1], wm[3], wm[4], wm[6], wm[7]);
   ctx.drawImage(img, 0, 0, srcW, srcH);
+  ctx.resetTransform();
 
   let blob;
   if (canvas instanceof OffscreenCanvas) {
@@ -247,6 +271,14 @@ async function renderPartToCanvasPng(img, srcW, srcH, canvasW, canvasH) {
     blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
   }
   return new Uint8Array(await blob.arrayBuffer());
+}
+
+/**
+ * Render a part's full texture onto a canvas-sized PNG (no transform).
+ * Legacy — kept for backward compatibility.
+ */
+async function renderPartToCanvasPng(img, srcW, srcH, canvasW, canvasH) {
+  return renderPartToCanvasPngTransformed(img, srcW, srcH, canvasW, canvasH, [1,0,0, 0,1,0, 0,0,1]);
 }
 
 /**

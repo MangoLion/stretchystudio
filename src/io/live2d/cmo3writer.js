@@ -19,6 +19,7 @@ import { packCaff, COMPRESS_RAW, COMPRESS_FAST } from './caffPacker.js';
 
 const VERSION_PIS = [
   ['CArtMeshSource', '4'],
+  ['CRotationDeformerForm', '1'],
   ['KeyformGridSource', '1'],
   ['CParameterGroup', '4'],
   ['SerializeFormatVersion', '2'],
@@ -34,7 +35,11 @@ const IMPORT_PIS = [
   'com.live2d.cubism.doc.model.CModelInfo',
   'com.live2d.cubism.doc.model.CModelSource',
   'com.live2d.cubism.doc.model.affecter.CAffecterSourceSet',
+  'com.live2d.cubism.doc.model.deformer.ACDeformerForm',
+  'com.live2d.cubism.doc.model.deformer.ACDeformerSource',
   'com.live2d.cubism.doc.model.deformer.CDeformerSourceSet',
+  'com.live2d.cubism.doc.model.deformer.rotation.CRotationDeformerForm',
+  'com.live2d.cubism.doc.model.deformer.rotation.CRotationDeformerSource',
   'com.live2d.cubism.doc.model.drawable.ACDrawableForm',
   'com.live2d.cubism.doc.model.drawable.ACDrawableSource',
   'com.live2d.cubism.doc.model.drawable.CDrawableSourceSet',
@@ -53,6 +58,7 @@ const IMPORT_PIS = [
   'com.live2d.cubism.doc.model.extension.textureInput.inputFilter.CLayerSelectorMap',
   'com.live2d.cubism.doc.model.extension.textureInput.inputFilter.ModelImageFilterEnv',
   'com.live2d.cubism.doc.model.extension.textureInput.inputFilter.ModelImageFilterSet',
+  'com.live2d.cubism.doc.model.id.CDeformerId',
   'com.live2d.cubism.doc.model.id.CDrawableId',
   'com.live2d.cubism.doc.model.id.CParameterId',
   'com.live2d.cubism.doc.model.id.CPartId',
@@ -973,6 +979,117 @@ export async function generateCmo3(input) {
   }
 
   // ==================================================================
+  // 3b. ROTATION DEFORMERS (one per group with transform data)
+  // ==================================================================
+  // Each group node → CRotationDeformerSource. Deformer chain follows group hierarchy.
+  // Meshes reference their parent group's deformer via targetDeformerGuid.
+
+  const groupDeformerGuids = new Map(); // groupId → pidDeformerGuid
+  const allDeformerSources = []; // pidDeformerSource for CDeformerSourceSet
+
+  for (const g of groups) {
+    const t = g.transform || {};
+    // Create a deformer for every group (even identity transform — user can edit in Editor)
+    const [, pidDfGuid] = x.shared('CDeformerGuid', { uuid: uuid(), note: `Rot_${g.name || g.id}` });
+    groupDeformerGuids.set(g.id, pidDfGuid);
+
+    const [, pidDfForm] = x.shared('CFormGuid', { uuid: uuid(), note: `RotForm_${g.name || g.id}` });
+
+    // CoordType for this deformer (Canvas coordinates)
+    const [coordDf, pidCoordDf] = x.shared('CoordType');
+    x.sub(coordDf, 's', { 'xs.n': 'coordName' }).text = 'Canvas';
+
+    // KeyformGridSource (1 keyform, no parameter binding — rest pose)
+    const [kfgDf, pidKfgDf] = x.shared('KeyformGridSource');
+    const kfogDf = x.sub(kfgDf, 'array_list', { 'xs.n': 'keyformsOnGrid', count: '1' });
+    const kogDf = x.sub(kfogDf, 'KeyformOnGrid');
+    const akDf = x.sub(kogDf, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
+    x.sub(akDf, 'array_list', { 'xs.n': '_keyOnParameterList', count: '0' });
+    x.subRef(kogDf, 'CFormGuid', pidDfForm, { 'xs.n': 'keyformGuid' });
+    x.sub(kfgDf, 'array_list', { 'xs.n': 'keyformBindings', count: '0' });
+
+    // Determine parent deformer: parent group's deformer or ROOT
+    const parentDfGuid = g.parent && groupDeformerGuids.has(g.parent)
+      ? groupDeformerGuids.get(g.parent) : pidDeformerRoot;
+
+    // Determine parent part for this deformer
+    const parentPartGuid = groupPartGuids.has(g.id)
+      ? groupPartGuids.get(g.id)
+      : pidPartGuid; // fallback to root part
+
+    // CRotationDeformerSource
+    const [rotDf, pidRotDf] = x.shared('CRotationDeformerSource');
+    allDeformerSources.push(pidRotDf);
+
+    const acdfs = x.sub(rotDf, 'ACDeformerSource', { 'xs.n': 'super' });
+    const acpcs = x.sub(acdfs, 'ACParameterControllableSource', { 'xs.n': 'super' });
+    x.sub(acpcs, 's', { 'xs.n': 'localName' }).text = `${g.name || g.id}`;
+    x.sub(acpcs, 'b', { 'xs.n': 'isVisible' }).text = 'true';
+    x.sub(acpcs, 'b', { 'xs.n': 'isLocked' }).text = 'false';
+    x.subRef(acpcs, 'CPartGuid', parentPartGuid, { 'xs.n': 'parentGuid' });
+    x.subRef(acpcs, 'KeyformGridSource', pidKfgDf, { 'xs.n': 'keyformGridSource' });
+    const mftDf = x.sub(acpcs, 'KeyFormMorphTargetSet', { 'xs.n': 'keyformMorphTargetSet' });
+    x.sub(mftDf, 'carray_list', { 'xs.n': '_morphTargets', count: '0' });
+    const bwcDf = x.sub(mftDf, 'MorphTargetBlendWeightConstraintSet', { 'xs.n': 'blendWeightConstraintSet' });
+    x.sub(bwcDf, 'carray_list', { 'xs.n': '_constraints', count: '0' });
+    x.sub(acpcs, 'carray_list', { 'xs.n': '_extensions', count: '0' });
+    x.sub(acpcs, 'null', { 'xs.n': 'internalColor_direct_argb' });
+    x.sub(acpcs, 'null', { 'xs.n': 'internalColor_indirect_argb' });
+    x.subRef(acdfs, 'CDeformerGuid', pidDfGuid, { 'xs.n': 'guid' });
+    const dfIdStr = `Rotation_${(g.name || g.id).replace(/[^a-zA-Z0-9_]/g, '_')}`;
+    x.sub(acdfs, 'CDeformerId', { 'xs.n': 'id', idstr: dfIdStr });
+    x.subRef(acdfs, 'CDeformerGuid', parentDfGuid, { 'xs.n': 'targetDeformerGuid' });
+
+    x.sub(rotDf, 'b', { 'xs.n': 'useBoneUi_testImpl' }).text = 'true';
+
+    // Single keyform: rest pose (angle=0 because vertex positions are already in canvas space)
+    // Origin = group's position + pivot (where the rotation handle appears in Editor)
+    const angle = 0;
+    const originX = (t.x ?? 0) + (t.pivotX ?? 0);
+    const originY = (t.y ?? 0) + (t.pivotY ?? 0);
+
+    const kfsDf = x.sub(rotDf, 'carray_list', { 'xs.n': 'keyforms', count: '1' });
+    const rdf = x.sub(kfsDf, 'CRotationDeformerForm', {
+      angle: String(angle),
+      originX: originX.toFixed(1),
+      originY: originY.toFixed(1),
+      scale: '1.0',
+      isReflectX: 'false',
+      isReflectY: 'false',
+    });
+    const adfSuper = x.sub(rdf, 'ACDeformerForm', { 'xs.n': 'super' });
+    const acfDf = x.sub(adfSuper, 'ACForm', { 'xs.n': 'super' });
+    x.subRef(acfDf, 'CFormGuid', pidDfForm, { 'xs.n': 'guid' });
+    x.sub(acfDf, 'b', { 'xs.n': 'isAnimatedForm' }).text = 'false';
+    x.sub(acfDf, 'b', { 'xs.n': 'isLocalAnimatedForm' }).text = 'false';
+    x.subRef(acfDf, 'CRotationDeformerSource', pidRotDf, { 'xs.n': '_source' });
+    x.sub(acfDf, 'null', { 'xs.n': 'name' });
+    x.sub(acfDf, 's', { 'xs.n': 'notes' }).text = '';
+    x.sub(adfSuper, 'f', { 'xs.n': 'opacity' }).text = '1.0';
+    x.sub(adfSuper, 'CFloatColor', {
+      'xs.n': 'multiplyColor', red: '1.0', green: '1.0', blue: '1.0', alpha: '1.0',
+    });
+    x.sub(adfSuper, 'CFloatColor', {
+      'xs.n': 'screenColor', red: '0.0', green: '0.0', blue: '0.0', alpha: '1.0',
+    });
+    x.subRef(adfSuper, 'CoordType', pidCoordDf, { 'xs.n': 'coordType' });
+
+    x.sub(rotDf, 'f', { 'xs.n': 'handleLengthOnCanvas' }).text = '200.0';
+    x.sub(rotDf, 'f', { 'xs.n': 'circleRadiusOnCanvas' }).text = '100.0';
+    x.sub(rotDf, 'f', { 'xs.n': 'baseAngle' }).text = '0.0';
+  }
+
+  // Add deformer GUIDs to their parent part's _childGuids
+  for (const g of groups) {
+    const dfGuid = groupDeformerGuids.get(g.id);
+    if (!dfGuid) continue;
+    // Find which part source owns this group
+    const partSource = groupParts.has(g.id) ? groupParts.get(g.id) : rootPart;
+    partSource.childGuidsNode.children.push(x.ref('CDeformerGuid', dfGuid));
+    partSource.childGuidsNode.attrs.count = String(partSource.childGuidsNode.children.length);
+  }
+
+  // ==================================================================
   // 4. CArtMeshSource (per mesh)
   // ==================================================================
 
@@ -1073,6 +1190,8 @@ export async function generateCmo3(input) {
 
     x.sub(ds, 'CDrawableId', { 'xs.n': 'id', idstr: pm.meshId });
     x.subRef(ds, 'CDrawableGuid', pm.pidDrawable, { 'xs.n': 'guid' });
+    // targetDeformerGuid: ROOT for now (mesh vertices are in canvas space).
+    // Users assign meshes to deformers manually in Cubism Editor.
     x.subRef(ds, 'CDeformerGuid', pidDeformerRoot, { 'xs.n': 'targetDeformerGuid' });
     x.sub(ds, 'carray_list', { 'xs.n': 'clipGuidList', count: '0' });
     x.sub(ds, 'b', { 'xs.n': 'invertClippingMask' }).text = 'false';
@@ -1281,9 +1400,14 @@ export async function generateCmo3(input) {
     x.subRef(drawSources, 'CArtMeshSource', pid);
   }
 
-  // Deformer source set (empty)
+  // Deformer source set
   const deformerSet = x.sub(model, 'CDeformerSourceSet', { 'xs.n': 'deformerSourceSet' });
-  x.sub(deformerSet, 'carray_list', { 'xs.n': '_sources', count: '0' });
+  const deformerSources = x.sub(deformerSet, 'carray_list', {
+    'xs.n': '_sources', count: String(allDeformerSources.length),
+  });
+  for (const pid of allDeformerSources) {
+    x.subRef(deformerSources, 'CRotationDeformerSource', pid);
+  }
 
   // Affecter source set (empty — required)
   const affecterSet = x.sub(model, 'CAffecterSourceSet', { 'xs.n': 'affecterSourceSet' });
