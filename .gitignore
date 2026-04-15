@@ -35,6 +35,9 @@ desktop.ini
 # Reference materials (proprietary Live2D assets)
 reference/
 
+# Live2D export session prompts (development artifacts, not user-facing)
+docs/live2d-export/sessions/
+
 # Claude Code local state
 .claude/
 

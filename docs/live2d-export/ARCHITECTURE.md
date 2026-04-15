@@ -30,8 +30,8 @@ Crop parts to opaque bounds, binary-search for max uniform scale factor, pack wi
 ### ADR-008: Single-PSD texture pattern (.cmo3)
 Session 4 discovery: Cubism Editor requires ONE CLayeredImage with N CLayers inside one CLayerGroup. N separate CLayeredImages = geometry visible but NO textures. See [CMO3_FORMAT.md](CMO3_FORMAT.md) for details.
 
-### ADR-009: Generic parameter bindings for rotation deformers (Session 8)
-Each rotation deformer gets a `ParamRotation_GroupName` parameter with range [-30, +30] and 3 keyforms (angle at -30°, 0°, +30°). This is "Approach B" from the session prompt — generic ranges that give the user a controllable model immediately. Hiyori uses tuned per-deformer ranges, but generic ranges let users adjust in Editor. The `KeyformBindingSource` structure matches Hiyori exactly (circular ref with `KeyformGridSource`, `KeyOnParameter` with keyIndex, LINEAR interpolation).
+### ADR-009: Generic parameter bindings for rotation deformers (Session 8, updated Session 11)
+Each rotation deformer gets a `ParamRotation_GroupName` parameter with range [-30, +30] and 3 keyforms. Baked keyforms (art mesh bone-weight bending) use a wider range [-90, +90] for more dramatic elbow/knee motion. This is "Approach B" from the session prompt — generic ranges that give the user a controllable model immediately. Hiyori uses tuned per-deformer ranges, but generic ranges let users adjust in Editor. The `KeyformBindingSource` structure matches Hiyori exactly (circular ref with `KeyformGridSource`, `KeyOnParameter` with keyIndex, LINEAR interpolation).
 
 ### ADR-010: Part hierarchy mapping (.cmo3)
 Session 5: Stretchy Studio groups map to CPartSource with nested parent-child relationships. Root Part → CPartGuid children (groups) → CDrawableGuid children (meshes). Meshes without a group go directly under Root Part.
@@ -246,20 +246,20 @@ Live2D has **no native bone weight system**. Rotation deformers rotate all child
 
 **Rationale**: SS's core value is "rig quickly, export working puppet." Users have monolithic limb pieces (one PSD layer per arm) — that's the default armature wizard workflow. Baked keyforms give them a working elbow out of the box, and they can refine vertex positions in Cubism Editor if needed.
 
-### Architecture
+### Architecture (Session 11 — Implemented)
 
 ```
 Deformer hierarchy:
   Rotation_rightArm (shoulder — rotates whole arm)
-    └─ [no elbow deformer needed as mesh parent]
+    └─ [no elbow deformer — bone nodes skip deformer creation]
 
 Art mesh (handwear-r):
   - Parented to: Rotation_rightArm deformer
   - Bound to parameter: ParamRotation_rightElbow
   - 3 keyforms:
-    - At param=-30: each vertex at rotate(rest, -30° × boneWeight, elbowPivot)
+    - At param=-90: each vertex at rotate(rest, -90° × boneWeight, elbowPivot)
     - At param=0:   rest positions
-    - At param=+30: each vertex at rotate(rest, +30° × boneWeight, elbowPivot)
+    - At param=+90: each vertex at rotate(rest, +90° × boneWeight, elbowPivot)
 ```
 
 ### Vertex Position Computation
@@ -279,13 +279,35 @@ All positions are in the parent deformer's local space (arm deformer-local, matc
 
 ### Integration Points
 
-1. **exporter.js**: Pass `boneWeights` and `jointBoneId` per mesh to cmo3writer
+1. **exporter.js**: Pass `boneWeights`, `jointBoneId`, `jointPivotX/Y` per mesh to cmo3writer
 2. **cmo3writer.js**: For meshes with boneWeights:
+   - Pre-create bone rotation parameters (before per-mesh loop)
+   - Skip rotation deformer creation for bone nodes (no orphan deformers)
    - Keep mesh under parent arm deformer (NOT elbow deformer)
-   - Add 3 art mesh keyforms bound to elbow rotation parameter
+   - 3-keyform KeyformGridSource bound to bone rotation parameter (keys: -90, 0, +90)
    - Compute baked vertex positions per keyform
-3. **moc3writer.js**: Same keyform pattern for runtime export
+3. **moc3writer.js**: Same keyform pattern for runtime export (TODO)
 4. **motion3json.js**: Elbow rotation tracks already map to ParamRotation_* (no change needed)
+
+### Future: Multi-bone Baked Keyforms (bothLegs with two knees)
+
+When a monolithic `legwear` mesh needs two knee bones, the single-bone baked keyform approach extends to a 2D parameter grid:
+
+```
+Art mesh (legwear):
+  - Parented to: Rotation_bothLegs deformer (or ROOT)
+  - Bound to TWO parameters: ParamRotation_leftKnee × ParamRotation_rightKnee
+  - 3×3 = 9 keyforms (all combinations of -90°, 0°, +90° for each knee)
+  - Each vertex assigned to exactly ONE knee (left-of-center → leftKnee, right → rightKnee)
+  - Since weights don't overlap, rotations are independent per side
+
+mesh.skinBones = [
+  { id: leftKneeId, weights: [0, 0, 0.5, 1.0, 0, 0, ...] },  // left-side verts only
+  { id: rightKneeId, weights: [0, 0, 0, 0, 0.5, 1.0, ...] },  // right-side verts only
+]
+```
+
+See `docs/live2d-export/sessions/SESSION12_PROMPT.md` for full implementation plan.
 
 ---
 

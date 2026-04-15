@@ -7,7 +7,6 @@
  * @module io/live2d/exporter
  */
 
-import JSZip from 'jszip';
 import { generateModel3Json } from './model3json.js';
 import { generateCdi3Json } from './cdi3json.js';
 import { generateMotion3Json } from './motion3json.js';
@@ -40,6 +39,7 @@ export async function exportLive2D(project, images, opts = {}) {
     onProgress = () => {},
   } = opts;
 
+  const { default: JSZip } = await import('jszip');
   const zip = new JSZip();
 
   // --- Step 1: Pack textures ---
@@ -196,10 +196,13 @@ export async function exportLive2DProject(project, images, opts = {}) {
     const pngData = await renderPartToCanvasPng(img, fullW, fullH, canvasW, canvasH);
 
     // Flatten vertices: Array<{x,y}> → [x0,y0, x1,y1, ...]
-    // Vertices are already in canvas-space coordinates
+    // CRITICAL: Use restX/restY (original positions) not x/y (possibly deformed by bone rotation).
+    // When a user rotates an elbow in SS before exporting, v.x/v.y are permanently committed
+    // but UVs/textures are based on rest positions. Using rest positions ensures correct texture mapping.
+    // Baked keyforms (below) handle posing via parameters.
     const vertices = [];
     for (const v of mesh.vertices) {
-      vertices.push(v.x, v.y);
+      vertices.push(v.restX ?? v.x, v.restY ?? v.y);
     }
 
     // Flatten triangles: Array<[i,j,k]> → [i0,j0,k0, ...]
@@ -209,21 +212,36 @@ export async function exportLive2DProject(project, images, opts = {}) {
     }
 
     // UVs — vertex positions normalized to canvas dimensions.
-    // TRAP: These UVs are computed from CANVAS-SPACE positions and must stay that way.
+    // CRITICAL: Use restX/restY (same as vertices above) for UV computation.
     // cmo3writer.js transforms keyform positions to deformer-local space separately.
-    // Recomputing UVs from deformer-local positions would break texture mapping.
     const uvs = [];
     for (const v of mesh.vertices) {
-      let u = Math.max(0, Math.min(1, v.x / canvasW));
-      let vv = Math.max(0, Math.min(1, v.y / canvasH));
+      let u = Math.max(0, Math.min(1, (v.restX ?? v.x) / canvasW));
+      let vv = Math.max(0, Math.min(1, (v.restY ?? v.y) / canvasH));
       uvs.push(u, vv);
+    }
+
+    // Bone weight data for baked keyforms
+    const boneWeights = mesh.boneWeights ?? null;
+    const jointBoneId = mesh.jointBoneId ?? null;
+    // Find the elbow pivot in canvas space (jointBone's transform.pivotX/Y)
+    let jointPivotX = null, jointPivotY = null;
+    if (jointBoneId && boneWeights) {
+      const jointBone = project.nodes.find(n => n.id === jointBoneId);
+      if (jointBone?.transform) {
+        jointPivotX = jointBone.transform.pivotX ?? 0;
+        jointPivotY = jointBone.transform.pivotY ?? 0;
+      }
     }
 
     meshes.push({
       name: meshName,
       partId: part.id,
       parentGroupId: part.parent ?? null,
-      jointBoneId: part.mesh?.jointBoneId ?? null,
+      jointBoneId,
+      boneWeights,
+      jointPivotX,
+      jointPivotY,
       drawOrder: part.draw_order ?? i,
       vertices,
       triangles,
@@ -273,6 +291,7 @@ export async function exportLive2DProject(project, images, opts = {}) {
     });
 
     // Return ZIP containing both .cmo3 and .can3
+    const { default: JSZip } = await import('jszip');
     const zip = new JSZip();
     zip.file(cmo3FileName, cmo3);
     zip.file(`${modelName}.can3`, can3);
@@ -324,40 +343,6 @@ async function renderPartToCanvasPngTransformed(img, srcW, srcH, canvasW, canvas
  */
 async function renderPartToCanvasPng(img, srcW, srcH, canvasW, canvasH) {
   return renderPartToCanvasPngTransformed(img, srcW, srcH, canvasW, canvasH, [1,0,0, 0,1,0, 0,0,1]);
-}
-
-/**
- * Render a part's texture to PNG bytes (cropped to imageBounds).
- */
-async function renderPartToPng(img, part, fullW, fullH) {
-  const bounds = part.imageBounds;
-  let cropX, cropY, cropW, cropH;
-  if (bounds && bounds.maxX > bounds.minX && bounds.maxY > bounds.minY) {
-    cropX = Math.max(0, Math.floor(bounds.minX) - 1);
-    cropY = Math.max(0, Math.floor(bounds.minY) - 1);
-    cropW = Math.min(fullW - cropX, Math.ceil(bounds.maxX - bounds.minX) + 2);
-    cropH = Math.min(fullH - cropY, Math.ceil(bounds.maxY - bounds.minY) + 2);
-  } else {
-    cropX = 0; cropY = 0; cropW = fullW; cropH = fullH;
-  }
-
-  const canvas = typeof OffscreenCanvas !== 'undefined'
-    ? new OffscreenCanvas(cropW, cropH)
-    : document.createElement('canvas');
-  if (!(canvas instanceof OffscreenCanvas)) {
-    canvas.width = cropW;
-    canvas.height = cropH;
-  }
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-
-  let blob;
-  if (canvas instanceof OffscreenCanvas) {
-    blob = await canvas.convertToBlob({ type: 'image/png' });
-  } else {
-    blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-  }
-  return new Uint8Array(await blob.arrayBuffer());
 }
 
 /**

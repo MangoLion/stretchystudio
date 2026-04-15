@@ -1,6 +1,6 @@
 # Live2D Export — Progress Tracker
 
-## Current Status: Phase 3 COMPLETE — .can3 Animation Export (Session 10, 2026-04-15)
+## Current Status: Baked Keyforms COMPLETE — .cmo3 Project Export (Session 11, 2026-04-15)
 
 ---
 
@@ -100,30 +100,37 @@ Key bugs fixed: field name swap (vertex_counts/position_index_counts), keyform b
 - [x] Fix: Keyform vertex positions computed in jointBone's deformer-local space
 - [x] Explicit boneWeights/jointBoneId serialization in projectFile.js (defensive)
 - [x] **Confirmed in Cubism Editor 5.0** — "recover targetDeformer" warnings eliminated
-- [ ] **BLOCKED**: Rotation deformers rotate entire mesh rigidly — no per-vertex weighted bending
+- [x] **RESOLVED**: Baked bone-weight keyforms (Session 11) — smooth elbow/knee bending via art mesh keyforms
 
-### .cmo3 Bone Weight Problem (Session 10 Finding)
-
-SS uses per-vertex bone weights on monolithic arm meshes (one piece per arm). Live2D has no native bone weight system — rotation deformers rotate all content rigidly. This means exported elbows/knees rotate the entire limb instead of bending smoothly.
-
-**Decision: Baked keyforms (Session 11)**
-
-Instead of splitting meshes (complex, creates seams) or expecting the user to redo the work in Cubism Editor, we will bake bone-weight-based vertex positions into art mesh keyforms:
-
-- Mesh stays as one piece under the ARM deformer (shoulder rotation)
-- Mesh gets keyforms bound to the ELBOW rotation parameter
-- At each keyform angle (-30°, 0°, +30°), each vertex position = `rotate(rest, angle × boneWeight, elbowPivot)`
-- Live2D interpolates between positions → smooth weighted bending
-
-This preserves SS's rigging workflow and gives Live2D users a working puppet with smooth elbow/knee bending out of the box.
+### Session 11: Baked bone-weight keyforms + texture fix
+- [x] Fix: Rest-position texture bug — exporter uses `restX/restY` (not deformed `x/y`) for vertex positions and UVs
+- [x] Bone weight data passed from exporter (boneWeights array + elbow pivot coordinates)
+- [x] Baked keyforms: art meshes with boneWeights get 3 keyforms bound to elbow rotation parameter
+- [x] Vertex positions baked at -30°, 0°, +30° using `rotate(rest, angle × boneWeight, elbowPivot)` formula
+- [x] Mesh parented to ARM deformer (shoulder), not elbow deformer — baked keyforms handle bending
+- [x] Bone nodes (groups referenced as jointBoneId) skip rotation deformer creation — no orphan deformers
+- [x] Baked angle range increased to ±90° (was ±30°) for more dramatic elbow bending
+- [x] **Confirmed in Cubism Editor 5.0** — elbow parameter slider bends arm smoothly
+- [ ] Handle .moc3 runtime keyforms (if needed for Ren'Py)
 
 ## Phase 4: Future Work
 
-### Baked bone-weight keyforms (NEXT — Session 11)
-- [ ] Art mesh keyforms bound to elbow/knee rotation parameters
-- [ ] Bake per-vertex weighted rotation into keyform positions
-- [ ] Test in Cubism Editor: parameter slider bends arm smoothly
-- [ ] Handle both .cmo3 (keyforms) and .moc3 (runtime keyforms)
+### Multi-bone calf/knee controllers for merged legs (USER REQUEST)
+
+When a PSD has a single `legwear` layer (no `-l`/`-r` split), SS creates one `bothLegs` group with no knee bones. The user wants `leftKnee`/`rightKnee` bones as children of `bothLegs`, so that one monolithic leg mesh gets weight-based knee bending — same as how a monolithic arm mesh already gets elbow bending.
+
+**Why it doesn't "just work" like elbows**: Each arm is a separate PSD layer (`handwear-l`/`handwear-r`) → separate mesh → single bone per mesh. Merged legs = ONE mesh → TWO bones (leftKnee + rightKnee). The current bone weight system supports one bone per mesh.
+
+**Implementation plan**:
+1. **armatureOrganizer.js**: Add `leftKnee`/`rightKnee` to `needGroup` when `bothLegs=true`. Parent them to `bothLegs`. Fix `CREATE_ORDER` so `bothLegs` comes before knees. Pivots already available (`kp.lKnee`, `kp.rKnee`).
+2. **CanvasViewport.jsx**: Extend Remesh roleMap — `'bothLegs': ['leftKnee', 'rightKnee']`. For each vertex, assign to nearest knee (x-position heuristic: left-of-center → leftKnee, right → rightKnee). Compute weight per knee independently (distance-based blend along hip→knee axis). Store as `mesh.skinBones = [{ id, weights }, ...]`.
+3. **SkeletonOverlay.jsx**: Support multi-bone rotation — iterate `skinBones` array, apply each bone's rotation independently per vertex.
+4. **projectFile.js**: Save/load `skinBones` array (backwards compat: keep `jointBoneId`/`boneWeights` for single-bone).
+5. **exporter.js + cmo3writer.js**: For multi-bone meshes, create 2D KeyformGridSource with N×M keyform grid (3×3=9 keyforms for two knees). Each keyform position = cumulative rotation from both bones. Since weights don't overlap (left knee weight=0 for right-side vertices), positions are independent per side.
+
+**Estimated complexity**: Medium. armatureOrganizer change is trivial. The multi-bone weight system + 2D keyform grid is the bulk of the work.
+
+**Workaround (current)**: Split `legwear` in PSD into `legwear-l` + `legwear-r`. SS automatically creates separate leg groups with knee bones. Everything works with existing single-bone code.
 
 ### Runtime enhancements
 - [ ] .physics3.json generator (hair/clothing physics simulation)

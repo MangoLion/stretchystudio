@@ -97,10 +97,6 @@ export async function loadProject(file) {
       node.mesh.uvs = new Float32Array(node.mesh.uvs);
       // edgeIndices stays as Array — partRenderer handles both Array and Set
 
-      // Diagnostic: log skinning data survival
-      if (node.mesh.jointBoneId) {
-        console.log(`[loadProject] ${node.name}: boneWeights=${node.mesh.boneWeights?.length ?? 'MISSING'}, jointBoneId=${node.mesh.jointBoneId}`);
-      }
     }
   }
 

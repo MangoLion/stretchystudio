@@ -412,6 +412,26 @@ export async function generateCmo3(input) {
     });
   }
 
+  // Pre-create rotation parameters for bone nodes (needed by baked keyform meshes).
+  // These are groups referenced as jointBoneId by meshes with boneWeights.
+  // Created here (before per-mesh loop) so KeyformBindingSource can reference them.
+  const BAKED_ANGLE_MIN = -90;
+  const BAKED_ANGLE_MAX = 90;
+  const boneParamGuids = new Map(); // jointBoneId → { pidParam, paramId }
+  for (const m of meshes) {
+    if (m.jointBoneId && m.boneWeights && !boneParamGuids.has(m.jointBoneId)) {
+      const boneGroup = groups.find(g => g.id === m.jointBoneId);
+      const boneName = (boneGroup?.name || m.jointBoneId).replace(/[^a-zA-Z0-9_]/g, '_');
+      const paramId = `ParamRotation_${boneName}`;
+      const [, pidParam] = x.shared('CParameterGuid', { uuid: uuid(), note: paramId });
+      boneParamGuids.set(m.jointBoneId, { pidParam, paramId });
+      paramDefs.push({
+        pid: pidParam, id: paramId, name: `Rotation ${boneGroup?.name || m.jointBoneId}`,
+        min: BAKED_ANGLE_MIN, max: BAKED_ANGLE_MAX, defaultVal: 0, decimalPlaces: 1,
+      });
+    }
+  }
+
   // Root part GUID
   const [, pidPartGuid] = x.shared('CPartGuid', { uuid: uuid(), note: '__RootPart__' });
 
@@ -697,41 +717,105 @@ export async function generateCmo3(input) {
     x.subRef(tieInputs, 'CTextureInput_ModelImage', pidTimi);
     x.subRef(texInputExt, 'CTextureInput_ModelImage', pidTimi, { 'xs.n': 'currentTextureInputData' });
 
-    // Keyform system
+    // Keyform system — baked bone-weight keyforms for meshes with boneWeights,
+    // otherwise single keyform bound to ParamOpacity (existing behavior)
+    const hasBakedKeyforms = !!(m.boneWeights && m.jointBoneId && boneParamGuids.has(m.jointBoneId));
     const [kfBinding, pidKfb] = x.shared('KeyformBindingSource');
     const [kfGridMesh, pidKfgMesh] = x.shared('KeyformGridSource');
 
-    const kfog = x.sub(kfGridMesh, 'array_list', { 'xs.n': 'keyformsOnGrid', count: '1' });
-    const kog = x.sub(kfog, 'KeyformOnGrid');
-    const ak = x.sub(kog, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
-    const kopList = x.sub(ak, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
-    const kop = x.sub(kopList, 'KeyOnParameter');
-    x.subRef(kop, 'KeyformBindingSource', pidKfb, { 'xs.n': 'binding' });
-    x.sub(kop, 'i', { 'xs.n': 'keyIndex' }).text = '0';
-    x.subRef(kog, 'CFormGuid', pidFormMesh, { 'xs.n': 'keyformGuid' });
-    const kb = x.sub(kfGridMesh, 'array_list', { 'xs.n': 'keyformBindings', count: '1' });
-    x.subRef(kb, 'KeyformBindingSource', pidKfb);
+    // Extra form GUIDs for baked keyforms (min/max angles)
+    let pidFormMin = null, pidFormMax = null;
 
-    x.subRef(kfBinding, 'KeyformGridSource', pidKfgMesh, { 'xs.n': '_gridSource' });
-    x.subRef(kfBinding, 'CParameterGuid', pidParamOpacity, { 'xs.n': 'parameterGuid' });
-    const keys = x.sub(kfBinding, 'array_list', { 'xs.n': 'keys', count: '1' });
-    x.sub(keys, 'f').text = '1.0';
-    x.sub(kfBinding, 'InterpolationType', { 'xs.n': 'interpolationType', v: 'LINEAR' });
-    x.sub(kfBinding, 'ExtendedInterpolationType', { 'xs.n': 'extendedInterpolationType', v: 'LINEAR' });
-    x.sub(kfBinding, 'i', { 'xs.n': 'insertPointCount' }).text = '1';
-    x.sub(kfBinding, 'f', { 'xs.n': 'extendedInterpolationScale' }).text = '1.0';
-    x.sub(kfBinding, 's', { 'xs.n': 'description' }).text = 'ParamOpacity';
+    if (hasBakedKeyforms) {
+      // 3 keyforms: angle at min, rest (0), angle at max — matching Hiyori art mesh pattern
+      const [, _pidFormMin] = x.shared('CFormGuid', { uuid: uuid(), note: `${meshName}_baked_min` });
+      const [, _pidFormMax] = x.shared('CFormGuid', { uuid: uuid(), note: `${meshName}_baked_max` });
+      pidFormMin = _pidFormMin;
+      pidFormMax = _pidFormMax;
+
+      const boneParam = boneParamGuids.get(m.jointBoneId);
+
+      const kfog = x.sub(kfGridMesh, 'array_list', { 'xs.n': 'keyformsOnGrid', count: '3' });
+
+      // KeyformOnGrid[0] — angle at min
+      const kog0 = x.sub(kfog, 'KeyformOnGrid');
+      const ak0 = x.sub(kog0, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
+      const kop0 = x.sub(ak0, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
+      const kon0 = x.sub(kop0, 'KeyOnParameter');
+      x.subRef(kon0, 'KeyformBindingSource', pidKfb, { 'xs.n': 'binding' });
+      x.sub(kon0, 'i', { 'xs.n': 'keyIndex' }).text = '0';
+      x.subRef(kog0, 'CFormGuid', pidFormMin, { 'xs.n': 'keyformGuid' });
+
+      // KeyformOnGrid[1] — rest (angle=0)
+      const kog1 = x.sub(kfog, 'KeyformOnGrid');
+      const ak1 = x.sub(kog1, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
+      const kop1 = x.sub(ak1, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
+      const kon1 = x.sub(kop1, 'KeyOnParameter');
+      x.subRef(kon1, 'KeyformBindingSource', pidKfb, { 'xs.n': 'binding' });
+      x.sub(kon1, 'i', { 'xs.n': 'keyIndex' }).text = '1';
+      x.subRef(kog1, 'CFormGuid', pidFormMesh, { 'xs.n': 'keyformGuid' });
+
+      // KeyformOnGrid[2] — angle at max
+      const kog2 = x.sub(kfog, 'KeyformOnGrid');
+      const ak2 = x.sub(kog2, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
+      const kop2 = x.sub(ak2, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
+      const kon2 = x.sub(kop2, 'KeyOnParameter');
+      x.subRef(kon2, 'KeyformBindingSource', pidKfb, { 'xs.n': 'binding' });
+      x.sub(kon2, 'i', { 'xs.n': 'keyIndex' }).text = '2';
+      x.subRef(kog2, 'CFormGuid', pidFormMax, { 'xs.n': 'keyformGuid' });
+
+      const kb = x.sub(kfGridMesh, 'array_list', { 'xs.n': 'keyformBindings', count: '1' });
+      x.subRef(kb, 'KeyformBindingSource', pidKfb);
+
+      x.subRef(kfBinding, 'KeyformGridSource', pidKfgMesh, { 'xs.n': '_gridSource' });
+      x.subRef(kfBinding, 'CParameterGuid', boneParam.pidParam, { 'xs.n': 'parameterGuid' });
+      const keys = x.sub(kfBinding, 'array_list', { 'xs.n': 'keys', count: '3' });
+      x.sub(keys, 'f').text = String(BAKED_ANGLE_MIN) + '.0';
+      x.sub(keys, 'f').text = '0.0';
+      x.sub(keys, 'f').text = String(BAKED_ANGLE_MAX) + '.0';
+      x.sub(kfBinding, 'InterpolationType', { 'xs.n': 'interpolationType', v: 'LINEAR' });
+      x.sub(kfBinding, 'ExtendedInterpolationType', { 'xs.n': 'extendedInterpolationType', v: 'LINEAR' });
+      x.sub(kfBinding, 'i', { 'xs.n': 'insertPointCount' }).text = '1';
+      x.sub(kfBinding, 'f', { 'xs.n': 'extendedInterpolationScale' }).text = '1.0';
+      x.sub(kfBinding, 's', { 'xs.n': 'description' }).text = boneParam.paramId;
+    } else {
+      // Standard single keyform bound to ParamOpacity
+      const kfog = x.sub(kfGridMesh, 'array_list', { 'xs.n': 'keyformsOnGrid', count: '1' });
+      const kog = x.sub(kfog, 'KeyformOnGrid');
+      const ak = x.sub(kog, 'KeyformGridAccessKey', { 'xs.n': 'accessKey' });
+      const kopList = x.sub(ak, 'array_list', { 'xs.n': '_keyOnParameterList', count: '1' });
+      const kop = x.sub(kopList, 'KeyOnParameter');
+      x.subRef(kop, 'KeyformBindingSource', pidKfb, { 'xs.n': 'binding' });
+      x.sub(kop, 'i', { 'xs.n': 'keyIndex' }).text = '0';
+      x.subRef(kog, 'CFormGuid', pidFormMesh, { 'xs.n': 'keyformGuid' });
+      const kb = x.sub(kfGridMesh, 'array_list', { 'xs.n': 'keyformBindings', count: '1' });
+      x.subRef(kb, 'KeyformBindingSource', pidKfb);
+
+      x.subRef(kfBinding, 'KeyformGridSource', pidKfgMesh, { 'xs.n': '_gridSource' });
+      x.subRef(kfBinding, 'CParameterGuid', pidParamOpacity, { 'xs.n': 'parameterGuid' });
+      const keys = x.sub(kfBinding, 'array_list', { 'xs.n': 'keys', count: '1' });
+      x.sub(keys, 'f').text = '1.0';
+      x.sub(kfBinding, 'InterpolationType', { 'xs.n': 'interpolationType', v: 'LINEAR' });
+      x.sub(kfBinding, 'ExtendedInterpolationType', { 'xs.n': 'extendedInterpolationType', v: 'LINEAR' });
+      x.sub(kfBinding, 'i', { 'xs.n': 'insertPointCount' }).text = '1';
+      x.sub(kfBinding, 'f', { 'xs.n': 'extendedInterpolationScale' }).text = '1.0';
+      x.sub(kfBinding, 's', { 'xs.n': 'description' }).text = 'ParamOpacity';
+    }
 
     perMesh.push({
       mi, meshName, meshId, pngPath, drawOrder: m.drawOrder ?? (500 + mi),
-      pidDrawable, pidFormMesh, pidMiGuid, pidTexGuid, pidExtMesh, pidExtTex, pidEmesh,
+      pidDrawable, pidFormMesh, pidFormMin, pidFormMax,
+      pidMiGuid, pidTexGuid, pidExtMesh, pidExtTex, pidEmesh,
       pidImg, pidLayer,
       pidFset, pidTex2d, pidTie, pidTimi,
       pidKfb, pidKfgMesh,
-      tieSup,
+      tieSup, hasBakedKeyforms,
       vertices: m.vertices,
       triangles: m.triangles,
       uvs: m.uvs,
+      boneWeights: m.boneWeights,
+      jointPivotX: m.jointPivotX,
+      jointPivotY: m.jointPivotY,
     });
   }
 
@@ -983,9 +1067,21 @@ export async function generateCmo3(input) {
   const DEFORMER_ANGLE_MIN = -30;
   const DEFORMER_ANGLE_MAX = 30;
 
+  // Bone nodes get baked keyforms on their meshes instead of rotation deformers.
+  // Their parameters were already created in the pre-creation step above.
+  // Add them to deformerParamMap for animation export (can3writer needs them).
+  for (const [boneId, bp] of boneParamGuids) {
+    deformerParamMap.set(boneId, {
+      paramId: bp.paramId, min: BAKED_ANGLE_MIN, max: BAKED_ANGLE_MAX,
+    });
+  }
+
   for (const g of groups) {
+    // Skip bone nodes — they get baked mesh keyforms, not rotation deformers
+    if (boneParamGuids.has(g.id)) continue;
+
     const t = g.transform || {};
-    // Create a deformer for every group (even identity transform — user can edit in Editor)
+    // Create a deformer for every non-bone group (even identity transform — user can edit in Editor)
     const [, pidDfGuid] = x.shared('CDeformerGuid', { uuid: uuid(), note: `Rot_${g.name || g.id}` });
     groupDeformerGuids.set(g.id, pidDfGuid);
 
@@ -995,14 +1091,20 @@ export async function generateCmo3(input) {
     const [, pidDfFormMax] = x.shared('CFormGuid', { uuid: uuid(), note: `RotForm_${g.name}_max` });
 
     // Parameter for this deformer: ParamRotation_GroupName
+    // Guard: bone params are pre-created above — skip if ID already exists
     const sanitizedName = (g.name || g.id).replace(/[^a-zA-Z0-9_]/g, '_');
     const rotParamId = `ParamRotation_${sanitizedName}`;
-    const [, pidRotParam] = x.shared('CParameterGuid', { uuid: uuid(), note: rotParamId });
-    paramDefs.push({
-      pid: pidRotParam, id: rotParamId, name: `Rotation ${g.name || g.id}`,
-      min: DEFORMER_ANGLE_MIN, max: DEFORMER_ANGLE_MAX, defaultVal: 0,
-      decimalPlaces: 1,
-    });
+    const existingParam = paramDefs.find(p => p.id === rotParamId);
+    const pidRotParam = existingParam
+      ? existingParam.pid
+      : (() => { const [, pid] = x.shared('CParameterGuid', { uuid: uuid(), note: rotParamId }); return pid; })();
+    if (!existingParam) {
+      paramDefs.push({
+        pid: pidRotParam, id: rotParamId, name: `Rotation ${g.name || g.id}`,
+        min: DEFORMER_ANGLE_MIN, max: DEFORMER_ANGLE_MAX, defaultVal: 0,
+        decimalPlaces: 1,
+      });
+    }
     deformerParamMap.set(g.id, {
       paramId: rotParamId, min: DEFORMER_ANGLE_MIN, max: DEFORMER_ANGLE_MAX,
     });
@@ -1428,10 +1530,25 @@ export async function generateCmo3(input) {
     // See ARCHITECTURE.md "Dual-Position System" for details.
     const meshParentGroup = meshes[pm.mi].parentGroupId;
     const jointBoneId = meshes[pm.mi].jointBoneId;
-    // Use jointBone's deformer origin if available (mesh is parented there),
-    // otherwise fall back to parent group's deformer origin
-    const dfOwner = jointBoneId && deformerWorldOrigins.has(jointBoneId)
-      ? jointBoneId : meshParentGroup;
+
+    // For baked keyform meshes: parent to ARM deformer (bone's parent group), not bone deformer.
+    // The ARM deformer handles shoulder rotation; baked keyforms handle elbow bending.
+    let dfOwner;
+    if (pm.hasBakedKeyforms) {
+      // Find the ARM group (parent of the bone node) — mesh is parented here, not to bone deformer.
+      // Fallback chain: bone's parent → mesh's parent → null (ungrouped, canvas space)
+      const boneGroup = groupMap.get(jointBoneId);
+      dfOwner = boneGroup?.parent || meshParentGroup;
+    } else {
+      dfOwner = jointBoneId && deformerWorldOrigins.has(jointBoneId)
+        ? jointBoneId : meshParentGroup;
+    }
+    // If dfOwner exists but has no deformer origin (e.g. bone node with no deformer),
+    // walk up the group hierarchy until we find one with a deformer origin.
+    while (dfOwner && !deformerWorldOrigins.has(dfOwner)) {
+      const parentGroup = groupMap.get(dfOwner);
+      dfOwner = parentGroup?.parent || null;
+    }
     const dfOrigin = dfOwner && deformerWorldOrigins.has(dfOwner)
       ? deformerWorldOrigins.get(dfOwner)
       : null;
@@ -1522,17 +1639,27 @@ export async function generateCmo3(input) {
 
     x.sub(ds, 'CDrawableId', { 'xs.n': 'id', idstr: pm.meshId });
     x.subRef(ds, 'CDrawableGuid', pm.pidDrawable, { 'xs.n': 'guid' });
-    // targetDeformerGuid: warp > jointBone's deformer > parent group's deformer > ROOT
-    // If the mesh has jointBoneId (elbow/knee skinning), parent it to that bone's
-    // deformer so the rotation parameter actually affects the mesh.
+    // targetDeformerGuid: warp > deformer > ROOT
+    // For baked keyform meshes: parent to ARM deformer (bone's parent), not bone deformer.
+    // For non-baked: jointBone's deformer > parent group's deformer > ROOT.
     const partId = meshes[pm.mi].partId;
     const meshJointBoneId = meshes[pm.mi].jointBoneId;
-    const meshDfGuid = meshWarpDeformerGuids.has(partId)
-      ? meshWarpDeformerGuids.get(partId)
-      : (meshJointBoneId && groupDeformerGuids.has(meshJointBoneId)
-        ? groupDeformerGuids.get(meshJointBoneId)
-        : (meshParentGroup && groupDeformerGuids.has(meshParentGroup)
-          ? groupDeformerGuids.get(meshParentGroup) : pidDeformerRoot));
+    let meshDfGuid;
+    if (meshWarpDeformerGuids.has(partId)) {
+      meshDfGuid = meshWarpDeformerGuids.get(partId);
+    } else if (pm.hasBakedKeyforms) {
+      // ARM deformer (bone's parent group) — mesh bending handled by baked keyforms
+      const boneGroup = groupMap.get(meshJointBoneId);
+      const armGroupId = boneGroup?.parent || meshParentGroup;
+      meshDfGuid = (armGroupId && groupDeformerGuids.has(armGroupId))
+        ? groupDeformerGuids.get(armGroupId) : pidDeformerRoot;
+    } else if (meshJointBoneId && groupDeformerGuids.has(meshJointBoneId)) {
+      meshDfGuid = groupDeformerGuids.get(meshJointBoneId);
+    } else if (meshParentGroup && groupDeformerGuids.has(meshParentGroup)) {
+      meshDfGuid = groupDeformerGuids.get(meshParentGroup);
+    } else {
+      meshDfGuid = pidDeformerRoot;
+    }
     x.subRef(ds, 'CDeformerGuid', meshDfGuid, { 'xs.n': 'targetDeformerGuid' });
     x.sub(ds, 'carray_list', { 'xs.n': 'clipGuidList', count: '0' });
     x.sub(ds, 'b', { 'xs.n': 'invertClippingMask' }).text = 'false';
@@ -1541,29 +1668,68 @@ export async function generateCmo3(input) {
     x.sub(meshSrc, 'int-array', { 'xs.n': 'indices', count: String(tris.length) }).text =
       tris.join(' ');
 
-    // Keyforms
-    const kfList = x.sub(meshSrc, 'carray_list', { 'xs.n': 'keyforms', count: '1' });
-    const artForm = x.sub(kfList, 'CArtMeshForm');
-    const adf = x.sub(artForm, 'ACDrawableForm', { 'xs.n': 'super' });
-    const acf = x.sub(adf, 'ACForm', { 'xs.n': 'super' });
-    x.subRef(acf, 'CFormGuid', pm.pidFormMesh, { 'xs.n': 'guid' });
-    x.sub(acf, 'b', { 'xs.n': 'isAnimatedForm' }).text = 'false';
-    x.sub(acf, 'b', { 'xs.n': 'isLocalAnimatedForm' }).text = 'false';
-    x.subRef(acf, 'CArtMeshSource', pidMesh, { 'xs.n': '_source' });
-    x.sub(acf, 'null', { 'xs.n': 'name' });
-    x.sub(acf, 's', { 'xs.n': 'notes' }).text = '';
-    x.sub(adf, 'i', { 'xs.n': 'drawOrder' }).text = String(pm.drawOrder);
-    x.sub(adf, 'f', { 'xs.n': 'opacity' }).text = '1.0';
-    x.sub(adf, 'CFloatColor', {
-      'xs.n': 'multiplyColor', red: '1.0', green: '1.0', blue: '1.0', alpha: '1.0',
-    });
-    x.sub(adf, 'CFloatColor', {
-      'xs.n': 'screenColor', red: '0.0', green: '0.0', blue: '0.0', alpha: '1.0',
-    });
-    x.subRef(adf, 'CoordType', pidCoord, { 'xs.n': 'coordType' });
-    // Keyform positions — in parent deformer's local space
-    x.sub(artForm, 'float-array', { 'xs.n': 'positions', count: String(verts.length) }).text =
-      verts.map(v => v.toFixed(1)).join(' ');
+    // Keyforms — baked bone-weight keyforms or single rest-pose keyform
+    // Helper to emit one CArtMeshForm
+    const emitArtMeshForm = (kfList, formGuidPid, positions) => {
+      const artForm = x.sub(kfList, 'CArtMeshForm');
+      const adf = x.sub(artForm, 'ACDrawableForm', { 'xs.n': 'super' });
+      const acf = x.sub(adf, 'ACForm', { 'xs.n': 'super' });
+      x.subRef(acf, 'CFormGuid', formGuidPid, { 'xs.n': 'guid' });
+      x.sub(acf, 'b', { 'xs.n': 'isAnimatedForm' }).text = 'false';
+      x.sub(acf, 'b', { 'xs.n': 'isLocalAnimatedForm' }).text = 'false';
+      x.subRef(acf, 'CArtMeshSource', pidMesh, { 'xs.n': '_source' });
+      x.sub(acf, 'null', { 'xs.n': 'name' });
+      x.sub(acf, 's', { 'xs.n': 'notes' }).text = '';
+      x.sub(adf, 'i', { 'xs.n': 'drawOrder' }).text = String(pm.drawOrder);
+      x.sub(adf, 'f', { 'xs.n': 'opacity' }).text = '1.0';
+      x.sub(adf, 'CFloatColor', {
+        'xs.n': 'multiplyColor', red: '1.0', green: '1.0', blue: '1.0', alpha: '1.0',
+      });
+      x.sub(adf, 'CFloatColor', {
+        'xs.n': 'screenColor', red: '0.0', green: '0.0', blue: '0.0', alpha: '1.0',
+      });
+      x.subRef(adf, 'CoordType', pidCoord, { 'xs.n': 'coordType' });
+      x.sub(artForm, 'float-array', { 'xs.n': 'positions', count: String(positions.length) }).text =
+        positions.map(v => v.toFixed(1)).join(' ');
+    };
+
+    if (pm.hasBakedKeyforms) {
+      // 3 keyforms: min angle, rest (0), max angle
+      // Compute baked vertex positions by rotating each vertex around the elbow pivot
+      // by angle × boneWeight. All positions in ARM deformer-local space.
+      const weights = pm.boneWeights;
+      const pivotCanvasX = pm.jointPivotX ?? 0;
+      const pivotCanvasY = pm.jointPivotY ?? 0;
+      // Elbow pivot in deformer-local space
+      const pivotLocalX = dfOrigin ? (pivotCanvasX - dfOrigin.x) : pivotCanvasX;
+      const pivotLocalY = dfOrigin ? (pivotCanvasY - dfOrigin.y) : pivotCanvasY;
+
+      const computeBakedPositions = (angleDeg) => {
+        const positions = new Array(verts.length);
+        for (let i = 0; i < numVerts; i++) {
+          const localX = verts[i * 2];
+          const localY = verts[i * 2 + 1];
+          const w = weights[i] ?? 0;
+          const rad = angleDeg * w * Math.PI / 180;
+          const dx = localX - pivotLocalX;
+          const dy = localY - pivotLocalY;
+          const cos = Math.cos(rad);
+          const sin = Math.sin(rad);
+          positions[i * 2] = pivotLocalX + dx * cos - dy * sin;
+          positions[i * 2 + 1] = pivotLocalY + dx * sin + dy * cos;
+        }
+        return positions;
+      };
+
+      const kfList = x.sub(meshSrc, 'carray_list', { 'xs.n': 'keyforms', count: '3' });
+      emitArtMeshForm(kfList, pm.pidFormMin, computeBakedPositions(BAKED_ANGLE_MIN));
+      emitArtMeshForm(kfList, pm.pidFormMesh, verts); // rest (angle=0, no rotation)
+      emitArtMeshForm(kfList, pm.pidFormMax, computeBakedPositions(BAKED_ANGLE_MAX));
+    } else {
+      // Single keyform at rest position
+      const kfList = x.sub(meshSrc, 'carray_list', { 'xs.n': 'keyforms', count: '1' });
+      emitArtMeshForm(kfList, pm.pidFormMesh, verts);
+    }
 
     // Base pixel-space positions — in CANVAS space (used for texture mapping)
     x.sub(meshSrc, 'float-array', { 'xs.n': 'positions', count: String(canvasVerts.length) }).text =
