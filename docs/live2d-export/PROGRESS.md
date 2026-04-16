@@ -1,6 +1,6 @@
 # Live2D Export — Progress Tracker
 
-## Current Status: Baked Keyforms COMPLETE — .cmo3 Project Export (Session 11, 2026-04-15)
+## Current Status: Standard Rig Parameters + Warp RE — Session 12 (2026-04-16)
 
 ---
 
@@ -112,6 +112,23 @@ Key bugs fixed: field name swap (vertex_counts/position_index_counts), keyform b
 - [x] Baked angle range increased to ±90° (was ±30°) for more dramatic elbow bending
 - [x] **Confirmed in Cubism Editor 5.0** — elbow parameter slider bends arm smoothly
 - [ ] Handle .moc3 runtime keyforms (if needed for Ren'Py)
+
+## Phase 5: Standard Live2D Rig — IN PROGRESS
+
+### Session 12: Standard parameters + warp deformer research (2026-04-16)
+- [x] Upstream merge (audio tracks, shapekeys, IndexedDB save/load, preferences modal)
+- [x] Template & 3D parallax research documented (TEMPLATES.md — 500+ lines)
+- [x] SS already has full semantic classification via KNOWN_TAGS + boneRole
+- [x] "Generate standard Live2D rig" checkbox added to ExportModal (default: on)
+- [x] 18 standard parameter IDs added when checkbox enabled (ParamAngleX/Y/Z, ParamBody*, ParamEye*, ParamBrow*, ParamMouth*, ParamHair*)
+- [x] **Confirmed in Cubism Editor 5.0** — standard params visible in palette, model not broken
+- [x] Warp deformer coordinate system reverse-engineered from Java bytecode
+- [x] **KEY FINDING**: Warp local space = always 0..1 (`GRectF(0,0,1,1)` in transformCanvasToLocal)
+- [x] Warp grid positions = parent deformer space; mesh keyform positions = 0..1 warp local
+- [x] Documented in WARP_DEFORMERS.md
+- [ ] Determine ROOT space for warp grid positions (test model needed)
+- [ ] Implement single warp deformer (topwear) with correct coordinates
+- [ ] Extend to all face/body parts per TAG_DEFORMER_SPEC
 
 ## Phase 4: Future Work
 

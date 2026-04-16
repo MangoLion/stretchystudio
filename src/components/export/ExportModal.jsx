@@ -20,6 +20,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Progress } from '@/components/ui/progress';
 import { Slider } from '@/components/ui/slider';
 import { Separator } from '@/components/ui/separator';
+import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
 import { useProjectStore } from '@/store/projectStore';
 import { useAnimationStore } from '@/store/animationStore';
@@ -45,6 +46,7 @@ export function ExportModal({ open, onClose, captureRef }) {
   const [exportDest, setExportDest] = useState('zip');
   const [modelName, setModelName] = useState('model');
   const [atlasSize, setAtlasSize] = useState(2048);
+  const [generateRig, setGenerateRig] = useState(true);
 
   // Progress state
   const [progress, setProgress] = useState(null);
@@ -94,6 +96,7 @@ export function ExportModal({ open, onClose, captureRef }) {
         // .cmo3 project export (editable in Cubism Editor)
         const blob = await exportLive2DProject(project, images, {
           modelName: name,
+          generateRig,
           onProgress: (msg) =>
             setProgress(p => (p ? { ...p, label: msg } : null)),
         });
@@ -133,7 +136,7 @@ export function ExportModal({ open, onClose, captureRef }) {
       setProgress(null);
       setIsExporting(false);
     }
-  }, [project, modelName, atlasSize, type, onClose]);
+  }, [project, modelName, atlasSize, type, generateRig, onClose]);
 
   const handleExport = useCallback(async () => {
     if (type === 'live2d' || type === 'live2d_project') {
@@ -390,6 +393,23 @@ export function ExportModal({ open, onClose, captureRef }) {
                     </SelectContent>
                   </Select>
                 </div>
+                )}
+                {type === 'live2d_project' && (
+                  <div className="flex items-start gap-2">
+                    <Checkbox
+                      id="generateRig"
+                      checked={generateRig}
+                      onCheckedChange={setGenerateRig}
+                      disabled={isExporting}
+                      className="mt-0.5"
+                    />
+                    <Label htmlFor="generateRig" className="text-xs cursor-pointer leading-relaxed">
+                      Generate standard Live2D rig
+                      <span className="block text-muted-foreground font-normal">
+                        Adds warp deformers, standard parameters (ParamAngleX/Y/Z, ParamBody, etc.), and face-part deformer hierarchy
+                      </span>
+                    </Label>
+                  </div>
                 )}
                 <div className="text-xs text-muted-foreground px-2 py-1.5 rounded bg-muted/50">
                   {type === 'live2d_project' ? (

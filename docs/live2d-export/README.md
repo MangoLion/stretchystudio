@@ -58,6 +58,7 @@ UI integration: `src/components/export/ExportModal.jsx`
 | [MOC3_FORMAT.md](MOC3_FORMAT.md) | .moc3 binary format reference |
 | [CMO3_FORMAT.md](CMO3_FORMAT.md) | .cmo3 format reference (CAFF container, XML schema) |
 | [TEMPLATES.md](TEMPLATES.md) | Live2D templates, 3D parallax, standard params — research & feasibility |
+| [WARP_DEFORMERS.md](WARP_DEFORMERS.md) | Warp deformer coordinate system — reverse-engineered from Cubism Editor bytecode |
 
 ## Data Mapping
 

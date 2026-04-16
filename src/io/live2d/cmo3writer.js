@@ -370,6 +370,7 @@ function crc32Buf(data) {
  * @property {GroupInfo[]} [groups=[]] - Group nodes (become CPartSource)
  * @property {ParamInfo[]} [parameters=[]] - Parameters
  * @property {string} [modelName='StretchyStudio Export']
+ * @property {boolean} [generateRig=false] - Add standard Live2D parameter IDs
  */
 
 /**
@@ -384,6 +385,7 @@ export async function generateCmo3(input) {
     groups = [], parameters = [],
     animations = [],
     modelName = 'StretchyStudio Export',
+    generateRig = false,
   } = input;
   const x = new XmlBuilder();
 
@@ -410,6 +412,39 @@ export async function generateCmo3(input) {
       min: p.min ?? 0, max: p.max ?? 1, defaultVal: p.default ?? 0,
       decimalPlaces: 3,
     });
+  }
+
+  // Standard Live2D parameters (when generateRig is enabled).
+  // These use SDK-standard IDs so face tracking apps (VTube Studio) recognize them.
+  if (generateRig) {
+    const standardParams = [
+      { id: 'ParamAngleX',     name: 'Angle X',      min: -30, max: 30,  def: 0 },
+      { id: 'ParamAngleY',     name: 'Angle Y',      min: -30, max: 30,  def: 0 },
+      { id: 'ParamAngleZ',     name: 'Angle Z',      min: -30, max: 30,  def: 0 },
+      { id: 'ParamBodyAngleX', name: 'Body Angle X',  min: -10, max: 10, def: 0 },
+      { id: 'ParamBodyAngleY', name: 'Body Angle Y',  min: -10, max: 10, def: 0 },
+      { id: 'ParamBodyAngleZ', name: 'Body Angle Z',  min: -10, max: 10, def: 0 },
+      { id: 'ParamBreath',     name: 'Breath',        min: 0,   max: 1,  def: 0 },
+      { id: 'ParamEyeLOpen',   name: 'Eye L Open',    min: 0,   max: 1,  def: 1 },
+      { id: 'ParamEyeROpen',   name: 'Eye R Open',    min: 0,   max: 1,  def: 1 },
+      { id: 'ParamEyeBallX',   name: 'Eyeball X',     min: -1,  max: 1,  def: 0 },
+      { id: 'ParamEyeBallY',   name: 'Eyeball Y',     min: -1,  max: 1,  def: 0 },
+      { id: 'ParamBrowLY',     name: 'Brow L Y',      min: -1,  max: 1,  def: 0 },
+      { id: 'ParamBrowRY',     name: 'Brow R Y',      min: -1,  max: 1,  def: 0 },
+      { id: 'ParamMouthForm',  name: 'Mouth Form',    min: -1,  max: 1,  def: 0 },
+      { id: 'ParamMouthOpenY', name: 'Mouth Open',    min: 0,   max: 1,  def: 0 },
+      { id: 'ParamHairFront',  name: 'Hair Front',    min: -1,  max: 1,  def: 0 },
+      { id: 'ParamHairSide',   name: 'Hair Side',     min: -1,  max: 1,  def: 0 },
+      { id: 'ParamHairBack',   name: 'Hair Back',     min: -1,  max: 1,  def: 0 },
+    ];
+    for (const sp of standardParams) {
+      if (paramDefs.find(p => p.id === sp.id)) continue;
+      const [, pid] = x.shared('CParameterGuid', { uuid: uuid(), note: sp.id });
+      paramDefs.push({
+        pid, id: sp.id, name: sp.name,
+        min: sp.min, max: sp.max, defaultVal: sp.def, decimalPlaces: 1,
+      });
+    }
   }
 
   // Pre-create rotation parameters for bone nodes (needed by baked keyform meshes).
