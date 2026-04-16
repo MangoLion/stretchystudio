@@ -518,6 +518,176 @@ function MeshPanel({ node, onRemesh, onDeleteMesh }) {
   );
 }
 
+/* ── Shape Keys Panel ─────────────────────────────────────────────────────── */
+
+function ShapeKeysPanel({ node }) {
+  const updateProject = useProjectStore(s => s.updateProject);
+  const createBlendShape = useProjectStore(s => s.createBlendShape);
+  const deleteBlendShape = useProjectStore(s => s.deleteBlendShape);
+  const setBlendShapeValue = useProjectStore(s => s.setBlendShapeValue);
+  const setDraftPose = useAnimationStore(s => s.setDraftPose);
+  const editorMode = useEditorStore(s => s.editorMode);
+  const blendShapeEditMode = useEditorStore(s => s.blendShapeEditMode);
+  const activeBlendShapeId = useEditorStore(s => s.activeBlendShapeId);
+  const enterBlendShapeEditMode = useEditorStore(s => s.enterBlendShapeEditMode);
+  const exitBlendShapeEditMode = useEditorStore(s => s.exitBlendShapeEditMode);
+  const autoKeyframe = useEditorStore(s => s.autoKeyframe);
+  const currentTime = useAnimationStore(s => s.currentTime);
+  const activeAnimationId = useAnimationStore(s => s.activeAnimationId);
+
+  if (!node?.blendShapes) return null;
+
+  const shapes = node.blendShapes;
+
+  const handleAddShape = () => {
+    const nextNum = shapes.length + 1;
+    createBlendShape(node.id, `Key ${nextNum}`);
+  };
+
+  const handleDeleteShape = (shapeId) => {
+    deleteBlendShape(node.id, shapeId);
+    if (activeBlendShapeId === shapeId) {
+      exitBlendShapeEditMode();
+    }
+  };
+
+  const handleRenameShape = (shapeId, newName) => {
+    updateProject((proj) => {
+      const n = proj.nodes.find(nd => nd.id === node.id);
+      const shape = n?.blendShapes?.find(s => s.id === shapeId);
+      if (shape) shape.name = newName;
+    });
+  };
+
+  const handleInfluenceChange = (shapeId, value) => {
+    if (editorMode === 'animation') {
+      const prop = `blendShape:${shapeId}`;
+      setDraftPose(node.id, { [prop]: value });
+      if (autoKeyframe) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'K' }));
+      }
+    } else {
+      setBlendShapeValue(node.id, shapeId, value);
+    }
+  };
+
+  const handleEnterEditMode = (shapeId) => {
+    enterBlendShapeEditMode(shapeId);
+  };
+
+  const handleExitEditMode = () => {
+    exitBlendShapeEditMode();
+  };
+
+  // In edit mode, show condensed header instead of full list
+  if (blendShapeEditMode && activeBlendShapeId) {
+    const editingShape = shapes.find(s => s.id === activeBlendShapeId);
+    return (
+      <div className="space-y-2">
+        <SectionTitle>Shape Keys</SectionTitle>
+        <div className="flex items-center justify-between rounded bg-primary/10 border border-primary/30 px-2 py-1.5 gap-2">
+          <span className="text-xs text-primary font-medium">
+            Editing: {editingShape?.name ?? '...'}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[10px] shrink-0"
+            onClick={handleExitEditMode}
+          >
+            Done
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <SectionTitle>Shape Keys</SectionTitle>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 w-6 p-0 text-sm shrink-0"
+          onClick={handleAddShape}
+          title="Add shape key"
+        >
+          +
+        </Button>
+      </div>
+
+      {/* Basis row — always at top, read-only */}
+      <div className="flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
+        <span className="flex-1">Basis</span>
+        <span className="w-14"></span>
+      </div>
+
+      {/* Shape key rows */}
+      {shapes.map(shape => {
+        const influence = node.blendShapeValues?.[shape.id] ?? 0;
+        return (
+          <div
+            key={shape.id}
+            className={`flex items-center gap-1.5 rounded px-1 py-0.5 transition-colors ${
+              activeBlendShapeId === shape.id ? 'bg-primary/10' : ''
+            }`}
+          >
+            {/* Editable name field */}
+            <input
+              className="flex-1 text-xs bg-transparent min-w-0 border-0 outline-none px-1"
+              value={shape.name}
+              onChange={e => handleRenameShape(shape.id, e.target.value)}
+              style={{ color: 'inherit' }}
+            />
+
+            {/* Influence slider */}
+            <div className="w-16">
+              <Slider
+                min={0}
+                max={1}
+                step={0.01}
+                value={[influence]}
+                onValueChange={([v]) => handleInfluenceChange(shape.id, v)}
+                className="w-full"
+              />
+            </div>
+
+            {/* Value label */}
+            <span className="text-[10px] tabular-nums w-6 text-right text-muted-foreground">
+              {influence.toFixed(2)}
+            </span>
+
+            {/* Edit pencil button */}
+            <button
+              className="text-muted-foreground hover:text-primary transition-colors p-0.5 shrink-0"
+              onClick={() => handleEnterEditMode(shape.id)}
+              title="Edit shape"
+            >
+              ✎
+            </button>
+
+            {/* Delete button */}
+            <button
+              className="text-muted-foreground hover:text-destructive transition-colors p-0.5 shrink-0"
+              onClick={() => handleDeleteShape(shape.id)}
+              title="Delete shape"
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
+
+      {shapes.length === 0 && (
+        <p className="text-xs text-muted-foreground text-center py-2">
+          No shape keys. Click + to add one.
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* ── Root Inspector ───────────────────────────────────────────────────────── */
 
 export function Inspector({ onRemesh, onDeleteMesh }) {
@@ -551,11 +721,19 @@ export function Inspector({ onRemesh, onDeleteMesh }) {
     if (kfOv) { for (const k of ANIM_KEYS) { if (kfOv[k] !== undefined) tr[k] = kfOv[k]; } }
     if (drOv) { for (const k of ANIM_KEYS) { if (drOv[k] !== undefined) tr[k] = drOv[k]; } }
 
+    // Propagate blend shape influences from keyframe/draft overrides
+    const effectiveBSV = { ...(baseNode.blendShapeValues ?? {}) };
+    for (const shape of (baseNode.blendShapes ?? [])) {
+      const prop = `blendShape:${shape.id}`;
+      effectiveBSV[shape.id] = drOv?.[prop] ?? kfOv?.[prop] ?? effectiveBSV[shape.id] ?? 0;
+    }
+
     return {
       ...baseNode,
       transform: tr,
       opacity: drOv?.opacity ?? kfOv?.opacity ?? baseNode.opacity,
       visible: drOv?.visible ?? kfOv?.visible ?? baseNode.visible,
+      blendShapeValues: effectiveBSV,
     };
   }, [selection, nodes, editorMode, animations, activeAnimationId, currentTime, draftPose, loopKeyframes, fps, endFrame]);
 
@@ -570,6 +748,12 @@ export function Inspector({ onRemesh, onDeleteMesh }) {
             <>
               <Separator />
               <MeshPanel node={effectiveNode} onRemesh={onRemesh} onDeleteMesh={onDeleteMesh} />
+              {effectiveNode.mesh && (
+                <>
+                  <Separator />
+                  <ShapeKeysPanel node={effectiveNode} />
+                </>
+              )}
             </>
           )}
         </>

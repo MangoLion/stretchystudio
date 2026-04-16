@@ -3,7 +3,7 @@ import { useAnimationStore } from '@/store/animationStore';
 import { useProjectStore } from '@/store/projectStore';
 import { useEditorStore } from '@/store/editorStore';
 import { cn } from '@/lib/utils';
-import { Disc, RotateCcw, Repeat, SkipBack, SkipForward, Copy, Clipboard, Trash2 } from 'lucide-react';
+import { Disc, RotateCcw, Repeat, SkipBack, SkipForward, Copy, Clipboard, Trash2, Music, X, Settings } from 'lucide-react';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -11,6 +11,16 @@ import {
   ContextMenuTrigger,
   ContextMenuSeparator,
 } from '@/components/ui/context-menu';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import { Slider } from '@/components/ui/slider';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 /* ──────────────────────────────────────────────────────────────────────────
    Constants
@@ -39,18 +49,20 @@ function frameToMs(frame, fps) { return (frame / Math.max(1, fps)) * 1000; }
 /* ──────────────────────────────────────────────────────────────────────────
    Transport button (play/pause/stop/loop icons)
 ────────────────────────────────────────────────────────────────────────── */
-function TransportBtn({ onClick, active, title, children, className = '' }) {
+function TransportBtn({ onClick, active, title, children, className = '', disabled }) {
   return (
     <button
       onClick={onClick}
       title={title}
-      className={[
+      disabled={disabled}
+      className={cn(
         'flex items-center justify-center w-6 h-6 rounded text-xs transition-colors',
         active
           ? (className.includes('bg-') ? '' : 'bg-primary text-primary-foreground')
           : 'text-muted-foreground hover:text-foreground hover:bg-muted',
-        className,
-      ].join(' ')}
+        disabled && 'opacity-30 cursor-not-allowed pointer-events-none',
+        className
+      )}
     >
       {children}
     </button>
@@ -101,6 +113,560 @@ function NumField({ label, value, onChange, min, max, step = 1, className = '', 
         className="w-12 h-5 text-[11px] text-center bg-input border border-border rounded px-1 py-0 focus:outline-none focus:ring-1 focus:ring-ring"
       />
     </label>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   useAudioSync — Web Audio API playback sync
+
+   Key design: effect only watches isPlaying / activeAnimationId, NOT currentTime.
+   currentTime is read via ref so it's fresh at the moment play is pressed
+   without causing the effect to re-fire every rAF frame.
+────────────────────────────────────────────────────────────────────────── */
+function useAudioSync(animation, animStore) {
+  const audioCtxRef    = useRef(null);
+  const buffersRef     = useRef(new Map()); // trackId → AudioBuffer
+  const sourcesRef     = useRef(new Map()); // trackId → active AudioBufferSourceNode
+  const animationRef   = useRef(animation); // always-fresh animation, not a reactive dep
+  const currentTimeRef = useRef(animStore.currentTime); // always-fresh time, not a reactive dep
+
+  // Update refs every render so effects always read the latest values
+  animationRef.current   = animation;
+  currentTimeRef.current = animStore.currentTime;
+
+  // ── 1. Decode buffers when new tracks with audio appear ───────────────
+  //    Stable dep: track IDs + sourceUrls joined — avoids object identity churn
+  const trackSourceKey = (animation?.audioTracks ?? [])
+    .map(t => `${t.id}:${t.sourceUrl ?? ''}`)
+    .join('|');
+
+  useEffect(() => {
+    const tracks = animationRef.current?.audioTracks ?? [];
+    if (!tracks.length) return;
+
+    let ctx = audioCtxRef.current;
+    if (!ctx) { ctx = new AudioContext(); audioCtxRef.current = ctx; }
+
+    for (const track of tracks) {
+      if (!track.sourceUrl || buffersRef.current.has(track.id)) continue;
+      fetch(track.sourceUrl)
+        .then(r => r.arrayBuffer())
+        .then(ab => ctx.decodeAudioData(ab))
+        .then(buf => { buffersRef.current.set(track.id, buf); })
+        .catch(e => console.error(`Audio decode error (${track.id}):`, e));
+    }
+  }, [trackSourceKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── 2. Stop helper ─────────────────────────────────────────────────────
+  const stopAll = useCallback(() => {
+    sourcesRef.current.forEach(src => { try { src.stop(); } catch (_) {} });
+    sourcesRef.current.clear();
+  }, []);
+
+  // ── 3. Play/stop — ONLY fires on isPlaying toggle or animation switch ──
+  //    animation object intentionally NOT in deps (object ref changes every frame
+  //    during drags/updates and would cause runaway restarts). Read via ref instead.
+  useEffect(() => {
+    if (!animStore.isPlaying) {
+      stopAll();
+      return;
+    }
+
+    const tracks = animationRef.current?.audioTracks ?? [];
+    if (!tracks.length) return;
+
+    let ctx = audioCtxRef.current;
+    if (!ctx) { ctx = new AudioContext(); audioCtxRef.current = ctx; }
+
+    const startAll = async () => {
+      if (ctx.state === 'suspended') await ctx.resume();
+      stopAll();
+
+      const nowMs = currentTimeRef.current;
+
+      for (const track of tracks) {
+        if (!track.sourceUrl) continue;
+        const buffer = buffersRef.current.get(track.id);
+        if (!buffer) continue;
+
+        const audioStartMs    = track.audioStartMs   ?? 0;
+        const audioEndMs      = track.audioEndMs      ?? buffer.duration * 1000;
+        const timelineStartMs = track.timelineStartMs ?? 0;
+        const timelineEndMs   = timelineStartMs + (audioEndMs - audioStartMs);
+
+        if (nowMs >= timelineEndMs) continue;
+
+        const offsetInAudioMs = Math.max(0, audioStartMs + Math.max(0, nowMs - timelineStartMs));
+        if (offsetInAudioMs >= audioEndMs) continue;
+
+        const playDurationSec = (audioEndMs - offsetInAudioMs) / 1000;
+        const delaySec        = Math.max(0, (timelineStartMs - nowMs) / 1000);
+
+        try {
+          const source = ctx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(ctx.destination);
+          source.start(ctx.currentTime + delaySec, offsetInAudioMs / 1000, playDurationSec);
+          sourcesRef.current.set(track.id, source);
+        } catch (e) {
+          console.error(`Audio start error (${track.id}):`, e);
+        }
+      }
+    };
+
+    startAll().catch(e => console.error('Audio startAll error:', e));
+    return () => { stopAll(); };
+  // loopCount increments in animationStore.tick on each loop — causes audio restart from top
+  }, [animStore.isPlaying, animStore.activeAnimationId, animStore.loopCount, stopAll]); // NOT animation, NOT currentTime
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   AudioTrackModal — edit audio track parameters using shadcn Dialog
+────────────────────────────────────────────────────────────────────────── */
+function AudioTrackModal({ track, animation, update, isOpen, onClose }) {
+  // Local state to hold edits before saving (all in ms internally)
+  const [name, setName] = useState(track.name);
+  const [startOffset, setStartOffset] = useState(track.timelineStartMs);
+  const [audioStartMs, setAudioStartMs] = useState(track.audioStartMs ?? 0);
+  const [duration, setDuration] = useState((track.audioEndMs ?? track.audioDurationMs) - (track.audioStartMs ?? 0));
+
+  // Sync state when modal opens or track changes
+  useEffect(() => {
+    if (isOpen) {
+      setName(track.name);
+      setStartOffset(track.timelineStartMs);
+      setAudioStartMs(track.audioStartMs ?? 0);
+      setDuration((track.audioEndMs ?? track.audioDurationMs) - (track.audioStartMs ?? 0));
+    }
+  }, [isOpen, track]);
+
+  const handleSave = () => {
+    update(p => {
+      const anim = p.animations.find(a => a.id === animation.id);
+      if (anim) {
+        const t = anim.audioTracks.find(at => at.id === track.id);
+        if (t) {
+          t.name = name || 'Untitled Audio';
+          t.timelineStartMs = Math.round(Math.max(0, startOffset));
+          t.audioStartMs = Math.round(Math.max(0, audioStartMs));
+          t.audioEndMs = Math.round(Math.max(audioStartMs + 100, audioStartMs + duration));
+        }
+      }
+    });
+    onClose();
+  };
+
+  const maxAudio = track.audioDurationMs ?? 0;
+  const timelineEndMs = animation?.duration ?? 2000;
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="max-w-md bg-card border-border shadow-2xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-lg">
+            <Music className="w-5 h-5 text-primary" />
+            <span>Audio Settings</span>
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-6 py-4">
+          {/* Track Name */}
+          <div className="space-y-2">
+            <Label className="text-sm font-semibold tracking-tight">Track Name</Label>
+            <Input
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="e.g. Background Music"
+              className="h-9 font-medium"
+            />
+          </div>
+
+          <div className="border-t border-border/50 my-2" />
+
+          {/* Timeline Start Offset */}
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <Label className="text-sm font-semibold tracking-tight">Timeline Start</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={Number((startOffset / 1000).toFixed(2))}
+                  onChange={e => setStartOffset((parseFloat(e.target.value) || 0) * 1000)}
+                  className="w-24 h-8 text-right font-mono"
+                />
+                <span className="text-xs text-muted-foreground uppercase font-medium">s</span>
+              </div>
+            </div>
+            <Slider
+              min={0}
+              max={timelineEndMs}
+              step={1}
+              value={[startOffset]}
+              onValueChange={([v]) => setStartOffset(v)}
+              className="py-1"
+            />
+            <p className="text-[10px] text-muted-foreground italic">Where on the animation timeline the audio begins.</p>
+          </div>
+
+          {/* Audio Start Trim */}
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <Label className="text-sm font-semibold tracking-tight">Audio Clip Start</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={Number((audioStartMs / 1000).toFixed(2))}
+                  onChange={e => setAudioStartMs((parseFloat(e.target.value) || 0) * 1000)}
+                  className="w-24 h-8 text-right font-mono"
+                />
+                <span className="text-xs text-muted-foreground uppercase font-medium">s</span>
+              </div>
+            </div>
+            <Slider
+              min={0}
+              max={Math.max(maxAudio - 100, 0)}
+              step={1}
+              value={[audioStartMs]}
+              onValueChange={([v]) => {
+                const newVal = v;
+                setAudioStartMs(newVal);
+                // Ensure duration + start doesn't exceed total
+                if (newVal + duration > maxAudio) {
+                  setDuration(maxAudio - newVal);
+                }
+              }}
+              className="py-1"
+            />
+            <p className="text-[10px] text-muted-foreground italic">Trim from the beginning of the source audio file.</p>
+          </div>
+
+          {/* Duration */}
+          <div className="space-y-3">
+            <div className="flex justify-between items-center">
+              <Label className="text-sm font-semibold tracking-tight">Play Duration</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={Number((duration / 1000).toFixed(2))}
+                  onChange={e => setDuration((parseFloat(e.target.value) || 0.1) * 1000)}
+                  className="w-24 h-8 text-right font-mono"
+                />
+                <span className="text-xs text-muted-foreground uppercase font-medium">s</span>
+              </div>
+            </div>
+            <Slider
+              min={100}
+              max={Math.max(maxAudio - audioStartMs, 100)}
+              step={1}
+              value={[duration]}
+              onValueChange={([v]) => setDuration(v)}
+              className="py-1"
+            />
+            <p className="text-[10px] text-muted-foreground italic">Total time this audio clip will play for.</p>
+          </div>
+
+          {/* Audio Info Card */}
+          <div className="p-3 bg-muted/40 rounded-lg border border-border/50 space-y-2">
+            <div className="flex justify-between text-[11px]">
+              <span className="text-muted-foreground">Source Duration</span>
+              <span className="font-mono">{(maxAudio / 1000).toFixed(2)} s</span>
+            </div>
+            <div className="flex justify-between text-[11px]">
+              <span className="text-muted-foreground">Audio Segment</span>
+              <span className="font-mono text-primary">{(audioStartMs / 1000).toFixed(2)} → {((audioStartMs + duration) / 1000).toFixed(2)} s</span>
+            </div>
+            <div className="flex justify-between text-[11px]">
+              <span className="text-muted-foreground">Timeline Span</span>
+              <span className="font-mono text-primary">{(startOffset / 1000).toFixed(2)} → {((startOffset + duration) / 1000).toFixed(2)} s</span>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="gap-2 sm:gap-0">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-xs font-medium rounded-md bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-all border border-transparent hover:border-border"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            className="px-4 py-2 text-xs font-medium rounded-md bg-primary text-primary-foreground hover:shadow-[0_0_15px_rgba(var(--primary),0.4)] transition-all"
+          >
+            Apply Changes
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+
+/* ──────────────────────────────────────────────────────────────────────────
+   AudioTrackRow — audio track with upload or clip display
+────────────────────────────────────────────────────────────────────────── */
+function AudioTrackRow({
+  track,
+  animation,
+  update,
+  frameToPercentage,
+  xToFrame,
+  startFrame,
+  endFrame,
+  totalFrames,
+  fps,
+}) {
+  const fileInputRef = useRef(null);
+  const [draggingHandle, setDraggingHandle] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+
+  const timelineEndMs = (animation?.duration ?? 2000);
+
+  const handleUpload = async (file) => {
+    const url = URL.createObjectURL(file);
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    try {
+      const response = await fetch(url);
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = await ctx.decodeAudioData(arrayBuffer);
+
+      const audioDurationMs = buffer.duration * 1000;
+      const clipEndMs = Math.min(audioDurationMs, timelineEndMs);
+
+      update(p => {
+        const anim = p.animations.find(a => a.id === animation.id);
+        if (anim) {
+          const t = anim.audioTracks.find(at => at.id === track.id);
+          if (t) {
+            t.sourceUrl = url;
+            t.mimeType = file.type;
+            t.audioDurationMs = audioDurationMs;
+            t.audioStartMs = 0;
+            t.audioEndMs = clipEndMs;
+            t.timelineStartMs = 0;
+          }
+        }
+      });
+    } catch (err) {
+      console.error('Failed to decode audio:', err);
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const handleLeftDrag = useCallback((e) => {
+    if (!track.sourceUrl) return;
+    e.stopPropagation(); // Prevent playhead seeking
+    setDraggingHandle('left');
+
+    const startX = e.clientX;
+    const startFrame = xToFrame(startX);
+    const origStart = track.audioStartMs ?? 0;
+    const origTimelineStart = track.timelineStartMs ?? 0;
+
+    const handleMove = (ev) => {
+      const currentFrame = xToFrame(ev.clientX);
+      const frameDelta = currentFrame - startFrame;
+      const deltaMs = frameToMs(frameDelta, fps);
+
+      update(p => {
+        const anim = p.animations.find(a => a.id === animation.id);
+        if (anim) {
+          const t = anim.audioTracks.find(at => at.id === track.id);
+          if (t) {
+            const minDelta = Math.max(-origTimelineStart, -origStart); // keep both ≥ 0
+            const maxDelta = (t.audioEndMs ?? t.audioDurationMs) - origStart - 100;
+            const clampedDelta = Math.max(minDelta, Math.min(deltaMs, maxDelta));
+            t.audioStartMs    = origStart + clampedDelta;
+            t.timelineStartMs = origTimelineStart + clampedDelta;
+          }
+        }
+      });
+    };
+
+    const handleUp = () => {
+      setDraggingHandle(null);
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+  }, [track, animation, update, xToFrame, fps]);
+
+  const handleRightDrag = useCallback((e) => {
+    if (!track.sourceUrl) return;
+    e.stopPropagation(); // Prevent playhead seeking
+    setDraggingHandle('right');
+
+    const startX = e.clientX;
+    const startFrame = xToFrame(startX);
+    const origEnd = track.audioEndMs;
+
+    const handleMove = (ev) => {
+      const currentFrame = xToFrame(ev.clientX);
+      const frameDelta = currentFrame - startFrame;
+      const deltaMs = frameToMs(frameDelta, fps);
+
+      update(p => {
+        const anim = p.animations.find(a => a.id === animation.id);
+        if (anim) {
+          const t = anim.audioTracks.find(at => at.id === track.id);
+          if (t) {
+            const audioStart = t.audioStartMs ?? 0;
+            const maxEnd = t.audioDurationMs ?? 0;
+            const minEnd = audioStart + 100;
+            const clampedEnd = Math.max(minEnd, Math.min(origEnd + deltaMs, maxEnd));
+            t.audioEndMs = clampedEnd;
+          }
+        }
+      });
+    };
+
+    const handleUp = () => {
+      setDraggingHandle(null);
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+  }, [track, animation, update, xToFrame, fps]);
+
+  const handleBarDrag = useCallback((e) => {
+    if (!track.sourceUrl) return;
+    e.stopPropagation(); // Prevent playhead seeking
+    setDraggingHandle('body');
+
+    const startX = e.clientX;
+    const startFrame = xToFrame(startX);
+    const origStart = track.timelineStartMs ?? 0;
+
+    const handleMove = (ev) => {
+      const currentFrame = xToFrame(ev.clientX);
+      const frameDelta = currentFrame - startFrame;
+      const deltaMs = frameToMs(frameDelta, fps);
+
+      update(p => {
+        const anim = p.animations.find(a => a.id === animation.id);
+        if (anim) {
+          const t = anim.audioTracks.find(at => at.id === track.id);
+          if (t) {
+            t.timelineStartMs = Math.max(0, origStart + deltaMs);
+          }
+        }
+      });
+    };
+
+    const handleUp = () => {
+      setDraggingHandle(null);
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+  }, [track, animation, update, xToFrame, fps]);
+
+  const audioDuration = track.audioDurationMs ?? 0;
+  const audioStart = track.audioStartMs ?? 0;
+  const audioEnd = track.audioEndMs ?? audioDuration;
+  const playableMs = audioEnd - audioStart;
+  const timelineStart = track.timelineStartMs ?? 0;
+  const timelineEnd = timelineStart + playableMs;
+
+  const startFramePos = msToFrame(timelineStart, fps);
+  const endFramePos = msToFrame(timelineEnd, fps);
+  const leftPercent = (startFramePos - startFrame) / totalFrames * 100;
+  const rightPercent = (endFramePos - startFrame) / totalFrames * 100;
+
+  const deleteTrack = () => {
+    update(p => {
+      const anim = p.animations.find(a => a.id === animation.id);
+      if (anim) {
+        anim.audioTracks = anim.audioTracks.filter(at => at.id !== track.id);
+      }
+    });
+  };
+
+  return (
+    <>
+      <div className="flex border-b border-border/30 relative text-[11px] bg-muted/5" style={{ height: ROW_H }}>
+        {/* Label column */}
+        <div className="flex items-center justify-between px-2 border-r border-border/30 shrink-0 text-muted-foreground overflow-hidden sticky left-0 z-30 bg-card/80 backdrop-blur-sm shadow-[1px_0_2px_rgba(0,0,0,0.1)]" style={{ width: LABEL_W, minWidth: LABEL_W }}>
+          <span className="truncate text-xs font-medium">{track.name}</span>
+          <div className="flex gap-0.5 ml-1">
+            <button onClick={() => setShowModal(true)} className="p-0.5 hover:text-primary transition-colors" title="Audio settings">
+              <Settings size={12} />
+            </button>
+            <button onClick={deleteTrack} className="p-0.5 hover:text-destructive transition-colors" title="Delete audio track">
+              <X size={12} />
+            </button>
+          </div>
+        </div>
+
+        {/* Track area */}
+        <div className="relative flex-1 overflow-visible">
+        <div className="absolute inset-y-0" style={{ left: TRACK_PAD, right: TRACK_PAD }}>
+          {!track.sourceUrl ? (
+            <div className="flex items-center justify-center h-full">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="text-[10px] px-2 py-1 rounded bg-primary/20 hover:bg-primary/30 border border-primary/40 text-primary transition-colors"
+              >
+                Upload audio
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="audio/*"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleUpload(file);
+                }}
+                className="hidden"
+              />
+            </div>
+          ) : (
+            <div
+              onPointerDown={handleBarDrag}
+              className="absolute top-1/2 -translate-y-1/2 h-3 bg-primary/30 border border-primary/50 rounded transition-all"
+              style={{
+                left: `${leftPercent}%`,
+                right: `${100 - rightPercent}%`,
+                cursor: draggingHandle === 'body' ? 'grabbing' : 'grab',
+              }}
+              title={`${track.name} — drag to move, drag edges to trim`}
+            >
+              {/* Left handle */}
+              <div
+                onPointerDown={handleLeftDrag}
+                className="absolute top-0 bottom-0 -left-1 w-2 bg-primary/60 hover:bg-primary cursor-ew-resize rounded-l"
+                style={{ cursor: draggingHandle === 'left' ? 'grabbing' : 'ew-resize' }}
+              />
+              {/* Right handle */}
+              <div
+                onPointerDown={handleRightDrag}
+                className="absolute top-0 bottom-0 -right-1 w-2 bg-primary/60 hover:bg-primary cursor-ew-resize rounded-r"
+                style={{ cursor: draggingHandle === 'right' ? 'grabbing' : 'ew-resize' }}
+              />
+            </div>
+          )}
+        </div>
+        </div>
+      </div>
+
+      <AudioTrackModal
+        track={track}
+        animation={animation}
+        update={update}
+        fps={fps}
+        isOpen={showModal}
+        onClose={() => setShowModal(false)}
+      />
+    </>
   );
 }
 
@@ -169,6 +735,7 @@ export function TimelinePanel() {
         duration: 2000,
         fps: 24,
         tracks: [],
+        audioTracks: [],
       });
     });
     anim.setActiveAnimationId(id);
@@ -176,6 +743,9 @@ export function TimelinePanel() {
     anim.setEndFrame(48);
     return id;
   }, [proj.animations, update, anim]);
+
+  // Audio sync hook
+  useAudioSync(animation, anim);
 
   /* ── Timeline pixel helpers ─────────────────────────────────────────── */
   // clientX to global frame mapping, respecting zoom
@@ -599,12 +1169,12 @@ export function TimelinePanel() {
       {/* ── Transport bar ───────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-2 py-1 border-b border-border shrink-0 bg-card">
         {/* First Frame */}
-        <TransportBtn onClick={stop} title="First Frame">
+        <TransportBtn disabled={!hasAnimation} onClick={stop} title="First Frame">
           <SkipBack size={14} />
         </TransportBtn>
 
         {/* Play / Pause */}
-        <TransportBtn onClick={togglePlay} active={anim.isPlaying} title={anim.isPlaying ? 'Pause' : 'Play'}>
+        <TransportBtn disabled={!hasAnimation} onClick={togglePlay} active={anim.isPlaying} title={anim.isPlaying ? 'Pause' : 'Play'}>
           {anim.isPlaying ? (
             <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
               <rect x="1.5" y="1" width="2.5" height="8" rx="0.5" />
@@ -618,12 +1188,12 @@ export function TimelinePanel() {
         </TransportBtn>
 
         {/* Last Frame */}
-        <TransportBtn onClick={lastFrame} title="Last Frame">
+        <TransportBtn disabled={!hasAnimation} onClick={lastFrame} title="Last Frame">
           <SkipForward size={14} />
         </TransportBtn>
 
         {/* Repeat */}
-        <TransportBtn onClick={() => anim.setLoop(!anim.loop)} active={anim.loop} title="Repeat">
+        <TransportBtn disabled={!hasAnimation} onClick={() => anim.setLoop(!anim.loop)} active={anim.loop} title="Repeat">
           <Repeat size={14} />
         </TransportBtn>
 
@@ -684,6 +1254,7 @@ export function TimelinePanel() {
 
         {/* Loop Keyframes */}
         <TransportBtn
+          disabled={!hasAnimation}
           onClick={() => anim.setLoopKeyframes && anim.setLoopKeyframes(!anim.loopKeyframes)}
           active={anim.loopKeyframes}
           title="Loop Keyframes: When active, the animation will interpolate from the last keyframe back to the first keyframe for a seamless loop."
@@ -693,12 +1264,41 @@ export function TimelinePanel() {
 
         {/* Auto Keyframe */}
         <TransportBtn
+          disabled={!hasAnimation}
           onClick={() => setAutoKeyframe(!autoKeyframe)}
           active={autoKeyframe}
           className={autoKeyframe ? 'animate-recording' : ''}
           title="Auto Keyframe: Automatically commit values to track when properties are changed"
         >
           <Disc size={14} strokeWidth={2} />
+        </TransportBtn>
+
+        {/* Add Audio Track */}
+        <TransportBtn
+          disabled={!hasAnimation}
+          onClick={() => {
+            const name = window.prompt('Audio track name:', `Audio ${(animation?.audioTracks?.length ?? 0) + 1}`);
+            if (name) {
+              update((p) => {
+                const a = p.animations.find(x => x.id === anim.activeAnimationId);
+                if (a) {
+                  a.audioTracks.push({
+                    id: uid(),
+                    name,
+                    sourceUrl: null,
+                    mimeType: '',
+                    audioDurationMs: 0,
+                    audioStartMs: 0,
+                    audioEndMs: null,
+                    timelineStartMs: 0,
+                  });
+                }
+              });
+            }
+          }}
+          title={!hasAnimation ? "Create an animation first to add audio" : "Add audio track"}
+        >
+          <Music size={14} />
         </TransportBtn>
 
         <span className="flex-1" />
@@ -731,16 +1331,16 @@ export function TimelinePanel() {
         ref={trackAreaRef}
         onPointerDown={onTrackAreaPointerDown}
       >
-        {trackRows.length === 0 ? (
+        {trackRows.length === 0 && (animation?.audioTracks?.length ?? 0) === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center">
             <p className="text-[11px] text-muted-foreground/60">
               {hasAnimation
-                ? 'Select a node and press K to add keyframes'
+                ? 'Select a node and press K to add keyframes or click 🎵 to add audio'
                 : 'Create an animation to begin'}
             </p>
           </div>
         ) : (
-          <div className="relative min-w-full isolate" style={{ minHeight: RULER_H + trackRows.length * ROW_H }}>
+          <div className="relative min-w-full isolate" style={{ minHeight: RULER_H + (trackRows.length + (animation?.audioTracks?.length ?? 0)) * ROW_H }}>
 
             {/* Selection Box */}
             {selectionBox && (
@@ -960,8 +1560,24 @@ export function TimelinePanel() {
               </div>
             ))}
 
+            {/* Audio track rows */}
+            {(animation?.audioTracks ?? []).map((audioTrack) => (
+              <AudioTrackRow
+                key={audioTrack.id}
+                track={audioTrack}
+                animation={animation}
+                update={update}
+                frameToPercentage={frameToPercentage}
+                xToFrame={xToFrame}
+                startFrame={startFrame}
+                endFrame={endFrame}
+                totalFrames={totalFrames}
+                fps={fps}
+              />
+            ))}
+
             {/* Playhead — vertical line spanning ruler + all rows */}
-            {trackRows.length > 0 && (() => {
+            {(trackRows.length > 0 || (animation?.audioTracks?.length ?? 0) > 0) && (() => {
               const frac = (currentFrame - startFrame) / totalFrames;
               if (frac < 0 || frac > 1) return null;
               return (

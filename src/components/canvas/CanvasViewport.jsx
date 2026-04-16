@@ -34,7 +34,7 @@ import { saveProject, loadProject } from '@/io/projectFile';
 function clientToCanvasSpace(canvas, clientX, clientY, view) {
   const rect = canvas.getBoundingClientRect();
   const cx = (clientX - rect.left) / view.zoom - view.panX / view.zoom;
-  const cy = (clientY - rect.top)  / view.zoom - view.panY / view.zoom;
+  const cy = (clientY - rect.top) / view.zoom - view.panY / view.zoom;
   return [cx, cy];
 }
 
@@ -113,41 +113,46 @@ function basename(filename) {
    Component
 ────────────────────────────────────────────────────────────────────────── */
 
-export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, loadRef, captureRef }) {
-  const canvasRef        = useRef(null);
-  const sceneRef         = useRef(null);
-  const rafRef           = useRef(null);
-  const workersRef       = useRef(new Map());  // Map<partId, Worker> for concurrent mesh generation
-  const imageDataMapRef  = useRef(new Map()); // Map<partId, ImageData> for alpha-based picking
-  const dragRef          = useRef(null);   // { partId, vertexIndex, startWorldX, startWorldY, startLocalX, startLocalY }
-  const panRef           = useRef(null);   // { startX, startY, panX0, panY0 }
-  const isDirtyRef       = useRef(true);
-  const brushCircleRef      = useRef(null);   // SVG <circle> for brush cursor — mutated directly for perf
+export default function CanvasViewport({
+  remeshRef, deleteMeshRef,
+  saveRef, loadRef, resetRef,
+  exportCaptureRef, thumbCaptureRef
+}) {
+  const canvasRef = useRef(null);
+  const sceneRef = useRef(null);
+  const rafRef = useRef(null);
+  const workersRef = useRef(new Map());  // Map<partId, Worker> for concurrent mesh generation
+  const imageDataMapRef = useRef(new Map()); // Map<partId, ImageData> for alpha-based picking
+  const dragRef = useRef(null);   // { partId, vertexIndex, startWorldX, startWorldY, startLocalX, startLocalY }
+  const panRef = useRef(null);   // { startX, startY, panX0, panY0 }
+  const isDirtyRef = useRef(true);
+  const brushCircleRef = useRef(null);   // SVG <circle> for brush cursor — mutated directly for perf
   const meshOverriddenParts = useRef(new Set()); // parts whose GPU mesh was overridden last frame
+  const fileInputRef = useRef(null);
 
   // PSD import wizard state
-  const [wizardStep, setWizardStep]         = useState(null);  // null | 'choose' | 'dwpose' | 'adjust'
-  const [wizardPsd, setWizardPsd]           = useState(null);  // { psdW, psdH, layers, partIds }
+  const [wizardStep, setWizardStep] = useState(null);  // null | 'choose' | 'dwpose' | 'adjust'
+  const [wizardPsd, setWizardPsd] = useState(null);  // { psdW, psdH, layers, partIds }
   const [confirmWipeOpen, setConfirmWipeOpen] = useState(false);
-  const [pendingPsdFile, setPendingPsdFile]   = useState(null);
-  const preImportSnapshotRef                = useRef(null);  // project snapshot before finalizePsdImport
-  const onnxSessionRef                      = useRef(null);  // cached ONNX session across imports
+  const [pendingPsdFile, setPendingPsdFile] = useState(null);
+  const preImportSnapshotRef = useRef(null);  // project snapshot before finalizePsdImport
+  const onnxSessionRef = useRef(null);  // cached ONNX session across imports
 
-  const project        = useProjectStore(s => s.project);
-  const updateProject  = useProjectStore(s => s.updateProject);
-  const resetProject   = useProjectStore(s => s.resetProject);
-  const editorState    = useEditorStore();
-  const setBrush             = useEditorStore(s => s.setBrush);
-  const setEditorMode        = useEditorStore(s => s.setEditorMode);
+  const project = useProjectStore(s => s.project);
+  const updateProject = useProjectStore(s => s.updateProject);
+  const resetProject = useProjectStore(s => s.resetProject);
+  const editorState = useEditorStore();
+  const setBrush = useEditorStore(s => s.setBrush);
+  const setEditorMode = useEditorStore(s => s.setEditorMode);
   const { setSelection, setView } = editorState;
   const { themeMode, osTheme } = useTheme();
 
   const animStore = useAnimationStore();
-  const animRef   = useRef(animStore);
+  const animRef = useRef(animStore);
   animRef.current = animStore;
 
   // Stable refs for imperative callbacks
-  const editorRef  = useRef(editorState);
+  const editorRef = useRef(editorState);
   const projectRef = useRef(project);
   const isDark = themeMode === 'system' ? osTheme === 'dark' : themeMode === 'dark';
   const isDarkRef = useRef(isDark);
@@ -236,6 +241,41 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
           }
         }
 
+        // Apply blend shapes — compute blended vertex positions for nodes with active influences
+        const ed = editorRef.current;
+        for (const node of projectRef.current.nodes) {
+          if (node.type !== 'part' || !node.mesh || !node.blendShapes?.length) continue;
+          const draft = anim.draftPose.get(node.id);
+          const kfOv = poseOverrides?.get(node.id);
+
+          let hasInfluence = false;
+          const influences = node.blendShapes.map(shape => {
+            // During edit mode, always show the active shape at full influence
+            if (ed.blendShapeEditMode && ed.activeBlendShapeId === shape.id) {
+              hasInfluence = true;
+              return 1.0;
+            }
+            const prop = `blendShape:${shape.id}`;
+            const v = draft?.[prop] ?? kfOv?.[prop] ?? node.blendShapeValues?.[shape.id] ?? 0;
+            if (v !== 0) hasInfluence = true;
+            return v;
+          });
+          if (!hasInfluence) continue;
+
+          const blendedVerts = node.mesh.vertices.map((v, i) => {
+            let bx = v.restX, by = v.restY;
+            for (let j = 0; j < node.blendShapes.length; j++) {
+              const d = node.blendShapes[j].deltas[i];
+              if (d) { bx += d.dx * influences[j]; by += d.dy * influences[j]; }
+            }
+            return { x: bx, y: by };
+          });
+
+          if (!poseOverrides) poseOverrides = new Map();
+          const existing = poseOverrides.get(node.id) ?? {};
+          if (!existing.mesh_verts) poseOverrides.set(node.id, { ...existing, mesh_verts: blendedVerts });
+        }
+
         sceneRef.current.draw(projectRef.current, editorRef.current, isDarkRef.current, poseOverrides);
 
 
@@ -278,17 +318,18 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
   /* ── Mark dirty when editor view / overlays / selection changes ──────── */
   useEffect(() => { isDirtyRef.current = true; },
-    [editorState.view, editorState.selection, editorState.overlays, editorState.meshEditMode]);
+    [editorState.view, editorState.selection, editorState.overlays, editorState.meshEditMode,
+    editorState.blendShapeEditMode, editorState.activeBlendShapeId]);
 
   /* ── Mark dirty when animation time or draft pose changes ───────────── */
   useEffect(() => { isDirtyRef.current = true; }, [animStore.currentTime]);
   useEffect(() => { isDirtyRef.current = true; }, [animStore.draftPose]);
 
-  /* ── [ / ] brush size shortcuts (only in deform edit mode) ────────────── */
+  /* ── [ / ] brush size shortcuts (only in deform edit mode or blend shape edit mode) ────────────── */
   useEffect(() => {
     const handler = (e) => {
-      const { meshEditMode, meshSubMode, brushSize } = editorRef.current;
-      if (!meshEditMode || meshSubMode !== 'deform') return;
+      const { meshEditMode, meshSubMode, blendShapeEditMode, brushSize } = editorRef.current;
+      if ((!meshEditMode || meshSubMode !== 'deform') && !blendShapeEditMode) return;
       if (e.key === '[') setBrush({ brushSize: Math.max(5, brushSize - 5) });
       else if (e.key === ']') setBrush({ brushSize: Math.min(300, brushSize + 5) });
     };
@@ -302,7 +343,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
       if (e.key !== 'k' && e.key !== 'K') return;
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
-      const ed   = editorRef.current;
+      const ed = editorRef.current;
       const anim = useAnimationStore.getState();
       if (ed.editorMode !== 'animation') return;
 
@@ -348,9 +389,9 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
           const node = p.nodes.find(n => n.id === nodeId);
           if (!node) continue;
 
-          const startMs  = (anim.startFrame / anim.fps) * 1000;
-          const rest     = anim.restPose.get(nodeId);
-          const draft    = anim.draftPose.get(nodeId);
+          const startMs = (anim.startFrame / anim.fps) * 1000;
+          const rest = anim.restPose.get(nodeId);
+          const draft = anim.draftPose.get(nodeId);
           const kfValues = keyframeOverrides.get(nodeId);
 
           for (const prop of KEYFRAME_PROPS) {
@@ -375,7 +416,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
             // first keyframe for this track and we're past the start.
             if (isNewTrack && currentTimeMs > startMs && rest) {
               const baseVal = prop === 'opacity' ? (rest.opacity ?? 1)
-                            : (rest[prop] ?? (prop === 'scaleX' || prop === 'scaleY' ? 1 : 0));
+                : (rest[prop] ?? (prop === 'scaleX' || prop === 'scaleY' ? 1 : 0));
               upsertKeyframe(track.keyframes, startMs, baseVal, 'linear');
             }
 
@@ -383,26 +424,54 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
           }
 
           // ── mesh_verts keyframe (deform mode) ───────────────────────────
+          // Only create/update if the node actually has a mesh deform in draft,
+          // or if a mesh_verts track already exists. This prevents accidental
+          // mesh_verts keyframes from blocking blend shape animation.
           if (node.type === 'part' && node.mesh) {
-            // Read verts: draft (staged deform) > current keyframe verts > base mesh
-            const meshVerts = draft?.mesh_verts
-              ?? kfValues?.mesh_verts
-              ?? node.mesh.vertices.map(v => ({ x: v.x, y: v.y }));
-
+            const hasMeshDeform = draft?.mesh_verts !== undefined;
             let meshTrack = animation.tracks.find(t => t.nodeId === nodeId && t.property === 'mesh_verts');
-            const isNewMeshTrack = !meshTrack;
-            if (!meshTrack) {
-              meshTrack = { nodeId, property: 'mesh_verts', keyframes: [] };
-              animation.tracks.push(meshTrack);
-            }
 
-            // Auto-insert base-mesh keyframe at startFrame if this is the first keyframe
-            if (isNewMeshTrack && currentTimeMs > startMs) {
-              const baseVerts = node.mesh.vertices.map(v => ({ x: v.x, y: v.y }));
-              upsertKeyframe(meshTrack.keyframes, startMs, baseVerts, 'linear');
-            }
+            if (hasMeshDeform || meshTrack) {
+              const meshVerts = draft?.mesh_verts
+                ?? kfValues?.mesh_verts
+                ?? node.mesh.vertices.map(v => ({ x: v.x, y: v.y }));
 
-            upsertKeyframe(meshTrack.keyframes, currentTimeMs, meshVerts, 'linear');
+              const isNewMeshTrack = !meshTrack;
+              if (!meshTrack) {
+                meshTrack = { nodeId, property: 'mesh_verts', keyframes: [] };
+                animation.tracks.push(meshTrack);
+              }
+
+              // Auto-insert base-mesh keyframe at startFrame if this is the first keyframe
+              if (isNewMeshTrack && currentTimeMs > startMs) {
+                const baseVerts = node.mesh.vertices.map(v => ({ x: v.x, y: v.y }));
+                upsertKeyframe(meshTrack.keyframes, startMs, baseVerts, 'linear');
+              }
+
+              upsertKeyframe(meshTrack.keyframes, currentTimeMs, meshVerts, 'linear');
+            }
+          }
+
+          // ── blend shape influence keyframes ───────────────────────────────
+          if (node.type === 'part' && node.blendShapes?.length) {
+            for (const shape of node.blendShapes) {
+              const prop = `blendShape:${shape.id}`;
+              const value = draft?.[prop] ?? kfValues?.[prop] ?? node.blendShapeValues?.[shape.id] ?? 0;
+
+              let track = animation.tracks.find(t => t.nodeId === nodeId && t.property === prop);
+              const isNewTrack = !track;
+              if (!track) {
+                track = { nodeId, property: prop, keyframes: [] };
+                animation.tracks.push(track);
+              }
+
+              // Auto-insert rest-pose keyframe at startFrame if this is the first keyframe
+              if (isNewTrack && currentTimeMs > startMs && rest) {
+                upsertKeyframe(track.keyframes, startMs, node.blendShapeValues?.[shape.id] ?? 0, 'linear');
+              }
+
+              upsertKeyframe(track.keyframes, currentTimeMs, value, 'linear');
+            }
           }
         }
       });
@@ -439,8 +508,15 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
       updateProject((proj) => {
         const node = proj.nodes.find(n => n.id === partId);
         if (node) {
+          // Clear blend shapes on remesh since vertex count/order changed
+          if (node.blendShapes?.length > 0) {
+            console.warn(`[Stretchy] Blend shapes on "${node.name}" cleared after remesh — topology changed.`);
+            node.blendShapes = [];
+            node.blendShapeValues = {};
+          }
+
           node.mesh = { vertices, uvs: Array.from(uvs), triangles, edgeIndices };
-          
+
           // Compute skin weights if this part belongs to a limb
           const parentGroup = proj.nodes.find(n => n.id === node.parent);
           if (parentGroup && parentGroup.boneRole) {
@@ -560,21 +636,21 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
       const imageBounds = computeImageBounds(imageData);
 
       updateProject((proj, ver) => {
-        proj.canvas.width  = img.width;
+        proj.canvas.width = img.width;
         proj.canvas.height = img.height;
         proj.textures.push({ id: partId, source: url });
         proj.nodes.push({
-          id:         partId,
-          type:       'part',
-          name:       basename(file.name),
-          parent:     null,
+          id: partId,
+          type: 'part',
+          name: basename(file.name),
+          parent: null,
           draw_order: proj.nodes.filter(n => n.type === 'part').length,
-          opacity:    1,
-          visible:    true,
-          clip_mask:  null,
-          transform:  { ...DEFAULT_TRANSFORM(), pivotX: img.width / 2, pivotY: img.height / 2 },
-          meshOpts:   null,
-          mesh:       null,
+          opacity: 1,
+          visible: true,
+          clip_mask: null,
+          transform: { ...DEFAULT_TRANSFORM(), pivotX: img.width / 2, pivotY: img.height / 2 },
+          meshOpts: null,
+          mesh: null,
           imageWidth: img.width,
           imageHeight: img.height,
           imageBounds: imageBounds || { minX: 0, minY: 0, maxX: img.width, maxY: img.height },
@@ -606,19 +682,19 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     }
 
     updateProject((proj, ver) => {
-      proj.canvas.width  = psdW;
+      proj.canvas.width = psdW;
       proj.canvas.height = psdH;
 
       // Create group nodes first (so parent IDs exist when parts reference them)
       for (const g of groupDefs) {
         proj.nodes.push({
-          id:        g.id,
-          type:      'group',
-          name:      g.name,
-          parent:    g.parentId,
-          opacity:   1,
-          visible:   true,
-          boneRole:  g.boneRole ?? null,
+          id: g.id,
+          type: 'group',
+          name: g.name,
+          parent: g.parentId,
+          opacity: 1,
+          visible: true,
+          boneRole: g.boneRole ?? null,
           transform: {
             ...DEFAULT_TRANSFORM(),
             pivotX: g.pivotX ?? 0,
@@ -665,18 +741,18 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
         const assignment = assignments?.get(i);
         proj.textures.push({ id: partId, source: '' });
         proj.nodes.push({
-          id:          partId,
-          type:        'part',
-          name:        layer.name,
-          parent:      assignment?.parentGroupId ?? null,
-          draw_order:  assignment?.drawOrder ?? (layers.length - 1 - i),
-          opacity:     layer.opacity,
-          visible:     layer.visible,
-          clip_mask:   null,
-          transform:   { ...DEFAULT_TRANSFORM(), pivotX: psdW / 2, pivotY: psdH / 2 },
-          meshOpts:    null,
-          mesh:        null,
-          imageWidth:  psdW,
+          id: partId,
+          type: 'part',
+          name: layer.name,
+          parent: assignment?.parentGroupId ?? null,
+          draw_order: assignment?.drawOrder ?? (layers.length - 1 - i),
+          opacity: layer.opacity,
+          visible: layer.visible,
+          clip_mask: null,
+          transform: { ...DEFAULT_TRANSFORM(), pivotX: psdW / 2, pivotY: psdH / 2 },
+          meshOpts: null,
+          mesh: null,
+          imageWidth: psdW,
           imageHeight: psdH,
           imageBounds: imageBounds || { minX: 0, minY: 0, maxX: psdW, maxY: psdH },
         });
@@ -732,17 +808,18 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     setWizardStep('choose');
   }, []);
 
+
   /* ── Wizard: split merged arms into handwear-l / handwear-r ────────────── */
   const handleWizardSplitArms = useCallback((mergedIndex, rightLayer, leftLayer) => {
     setWizardPsd(prev => {
       if (!prev) return prev;
-      const newLayers  = [...prev.layers];
+      const newLayers = [...prev.layers];
       const newPartIds = [...prev.partIds];
 
       // Build replacement entries (filter out nulls in case only one side was found)
       const replacements = [];
       if (rightLayer) replacements.push({ layer: rightLayer, partId: uid() });
-      if (leftLayer)  replacements.push({ layer: leftLayer,  partId: uid() });
+      if (leftLayer) replacements.push({ layer: leftLayer, partId: uid() });
 
       // Replace the merged layer at mergedIndex with the split layers
       newLayers.splice(mergedIndex, 1, ...replacements.map(r => r.layer));
@@ -850,22 +927,22 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     if (e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey)) {
       if (e.ctrlKey) {
         // Ctrl + Middle/Right drag → Zoom
-        panRef.current = { 
+        panRef.current = {
           mode: 'zoom',
-          startX: e.clientX, 
-          startY: e.clientY, 
+          startX: e.clientX,
+          startY: e.clientY,
           zoom0: view.zoom,
           panX0: view.panX,
-          panY0: view.panY 
+          panY0: view.panY
         };
       } else {
         // Regular Middle/Right drag → Pan
-        panRef.current = { 
+        panRef.current = {
           mode: 'pan',
-          startX: e.clientX, 
-          startY: e.clientY, 
-          panX0: view.panX, 
-          panY0: view.panY 
+          startX: e.clientX,
+          startY: e.clientY,
+          panX0: view.panX,
+          panY0: view.panY
         };
       }
       canvas.setPointerCapture(e.pointerId);
@@ -888,7 +965,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
     // Build effective nodes: apply animation pose overrides so world matrices
     // and vertex positions match what is visually displayed on the canvas.
-    const animNow    = animRef.current;
+    const animNow = animRef.current;
     const isAnimMode = editorRef.current.editorMode === 'animation';
     const activeAnim = isAnimMode
       ? (proj.animations.find(a => a.id === animNow.activeAnimationId) ?? null)
@@ -898,19 +975,19 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
     const effectiveNodes = (isAnimMode && (kfOverrides?.size || animNow.draftPose.size))
       ? proj.nodes.map(node => {
-          const kfOv = kfOverrides?.get(node.id);
-          const drOv = animNow.draftPose.get(node.id);
-          if (!kfOv && !drOv) return node;
-          const tr = { ...node.transform };
-          if (kfOv) { for (const k of ANIM_TRANSFORM_KEYS) { if (kfOv[k] !== undefined) tr[k] = kfOv[k]; } }
-          if (drOv) { for (const k of ANIM_TRANSFORM_KEYS) { if (drOv[k] !== undefined) tr[k] = drOv[k]; } }
-          return {
-            ...node,
-            transform: tr,
-            opacity: drOv?.opacity ?? kfOv?.opacity ?? node.opacity,
-            visible: drOv?.visible ?? kfOv?.visible ?? node.visible,
-          };
-        })
+        const kfOv = kfOverrides?.get(node.id);
+        const drOv = animNow.draftPose.get(node.id);
+        if (!kfOv && !drOv) return node;
+        const tr = { ...node.transform };
+        if (kfOv) { for (const k of ANIM_TRANSFORM_KEYS) { if (kfOv[k] !== undefined) tr[k] = kfOv[k]; } }
+        if (drOv) { for (const k of ANIM_TRANSFORM_KEYS) { if (drOv[k] !== undefined) tr[k] = drOv[k]; } }
+        return {
+          ...node,
+          transform: tr,
+          opacity: drOv?.opacity ?? kfOv?.opacity ?? node.opacity,
+          visible: drOv?.visible ?? kfOv?.visible ?? node.visible,
+        };
+      })
       : proj.nodes;
 
     // Compute world matrices once for picking — from effective (animated) transforms
@@ -928,17 +1005,17 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     if (meshEditMode && currentSelection.length > 0) {
       const selNode = effectiveNodes.find(n => n.id === currentSelection[0] && n.type === 'part' && n.mesh);
       if (selNode) {
-        const wm  = worldMatrices.get(selNode.id) ?? mat3Identity();
+        const wm = worldMatrices.get(selNode.id) ?? mat3Identity();
         const iwm = mat3Inverse(wm);
         const [lx, ly] = worldToLocal(worldX, worldY, iwm);
 
         if (toolMode === 'add_vertex') {
           // Compute new mesh data first, then upload and persist atomically
           const newVerts = [...selNode.mesh.vertices, { x: lx, y: ly, restX: lx, restY: ly }];
-          const oldUvs   = selNode.mesh.uvs;
-          const newUvs   = new Float32Array(oldUvs.length + 2);
+          const oldUvs = selNode.mesh.uvs;
+          const newUvs = new Float32Array(oldUvs.length + 2);
           newUvs.set(oldUvs);
-          newUvs[oldUvs.length]     = lx / (selNode.imageWidth  ?? 1);
+          newUvs[oldUvs.length] = lx / (selNode.imageWidth ?? 1);
           newUvs[oldUvs.length + 1] = ly / (selNode.imageHeight ?? 1);
           const result = retriangulate(newVerts, newUvs, selNode.mesh.edgeIndices);
 
@@ -955,9 +1032,9 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
           updateProject((proj2) => {
             const node = proj2.nodes.find(n => n.id === selNode.id);
             if (!node?.mesh) return;
-            node.mesh.vertices   = result.vertices;
-            node.mesh.uvs        = Array.from(result.uvs);
-            node.mesh.triangles  = result.triangles;
+            node.mesh.vertices = result.vertices;
+            node.mesh.uvs = Array.from(result.uvs);
+            node.mesh.triangles = result.triangles;
           });
 
         } else if (toolMode === 'remove_vertex') {
@@ -965,12 +1042,12 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
           if (idx >= 0 && selNode.mesh.vertices.length > 3) {
             // Compute new mesh data first
             const newVerts = selNode.mesh.vertices.filter((_, i) => i !== idx);
-            const oldUvs   = selNode.mesh.uvs;
-            const newUvs   = new Float32Array(oldUvs.length - 2);
+            const oldUvs = selNode.mesh.uvs;
+            const newUvs = new Float32Array(oldUvs.length - 2);
             for (let i = 0; i < idx; i++) { newUvs[i * 2] = oldUvs[i * 2]; newUvs[i * 2 + 1] = oldUvs[i * 2 + 1]; }
             for (let i = idx; i < newVerts.length; i++) { newUvs[i * 2] = oldUvs[(i + 1) * 2]; newUvs[i * 2 + 1] = oldUvs[(i + 1) * 2 + 1]; }
-            const oldEdge  = selNode.mesh.edgeIndices ?? new Set();
-            const newEdge  = new Set();
+            const oldEdge = selNode.mesh.edgeIndices ?? new Set();
+            const newEdge = new Set();
             for (const ei of oldEdge) {
               if (ei < idx) newEdge.add(ei);
               else if (ei > idx) newEdge.add(ei - 1);
@@ -990,9 +1067,9 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
             updateProject((proj2) => {
               const node = proj2.nodes.find(n => n.id === selNode.id);
               if (!node?.mesh) return;
-              node.mesh.vertices   = result.vertices;
-              node.mesh.uvs        = Array.from(result.uvs);
-              node.mesh.triangles  = result.triangles;
+              node.mesh.vertices = result.vertices;
+              node.mesh.uvs = Array.from(result.uvs);
+              node.mesh.triangles = result.triangles;
               node.mesh.edgeIndices = newEdge;
             });
           }
@@ -1003,10 +1080,29 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
           // Use the effective (pose-overridden) vertex positions so the brush
           // hits where the mesh is visually displayed, not the base mesh.
-          const effectiveVerts =
+          let effectiveVerts =
             animNow.draftPose.get(selNode.id)?.mesh_verts
             ?? kfOverrides?.get(selNode.id)?.mesh_verts
             ?? selNode.mesh.vertices;
+
+          // In blend shape edit mode, apply existing deltas (active shape at full influence)
+          // so each drag continues from the visually correct position, not from rest.
+          if (editorRef.current.blendShapeEditMode && selNode.blendShapes?.length) {
+            const activeShapeId = editorRef.current.activeBlendShapeId;
+            effectiveVerts = selNode.mesh.vertices.map((v, i) => {
+              let bx = v.restX, by = v.restY;
+              for (const shape of selNode.blendShapes) {
+                const d = shape.deltas[i];
+                if (!d) continue;
+                const inf = shape.id === activeShapeId
+                  ? 1.0  // active shape always at full influence during editing
+                  : (selNode.blendShapeValues?.[shape.id] ?? 0);
+                bx += d.dx * inf;
+                by += d.dy * inf;
+              }
+              return { x: bx, y: by };
+            });
+          }
 
           const affected = [];
           for (let i = 0; i < effectiveVerts.length; i++) {
@@ -1019,15 +1115,15 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
           }
           if (affected.length > 0 || meshSubMode === 'deform') {
             dragRef.current = {
-              mode:          'brush',
-              partId:        selNode.id,
-              startWorldX:   worldX,
-              startWorldY:   worldY,
+              mode: 'brush',
+              partId: selNode.id,
+              startWorldX: worldX,
+              startWorldY: worldY,
               // Snapshot of effective vertex positions at drag start
-              verticesSnap:  effectiveVerts.map(v => ({ ...v })),
-              allUvs:        new Float32Array(selNode.mesh.uvs),
-              imageWidth:    selNode.imageWidth,
-              imageHeight:   selNode.imageHeight,
+              verticesSnap: effectiveVerts.map(v => ({ ...v })),
+              allUvs: new Float32Array(selNode.mesh.uvs),
+              imageWidth: selNode.imageWidth,
+              imageHeight: selNode.imageHeight,
               affected,
               iwm,
             };
@@ -1041,7 +1137,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     }
 
     for (const node of sortedParts) {
-      const wm  = worldMatrices.get(node.id) ?? mat3Identity();
+      const wm = worldMatrices.get(node.id) ?? mat3Identity();
       const iwm = mat3Inverse(wm);
       const [lx, ly] = worldToLocal(worldX, worldY, iwm);
 
@@ -1054,14 +1150,14 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
         const idx = findNearestVertex(nodeEffVerts, lx, ly, 14 / view.zoom);
         if (idx >= 0) {
           dragRef.current = {
-            partId:       node.id,
-            vertexIndex:  idx,
-            startWorldX:  worldX,
-            startWorldY:  worldY,
-            startLocalX:  nodeEffVerts[idx].x,
-            startLocalY:  nodeEffVerts[idx].y,
-            imageWidth:   node.imageWidth,
-            imageHeight:  node.imageHeight,
+            partId: node.id,
+            vertexIndex: idx,
+            startWorldX: worldX,
+            startWorldY: worldY,
+            startLocalX: nodeEffVerts[idx].x,
+            startLocalY: nodeEffVerts[idx].y,
+            imageWidth: node.imageWidth,
+            imageHeight: node.imageHeight,
             iwm,
           };
           setSelection([node.id]);
@@ -1089,19 +1185,19 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     if (panRef.current) {
       const dx = e.clientX - panRef.current.startX;
       const dy = e.clientY - panRef.current.startY;
-      
+
       if (panRef.current.mode === 'zoom') {
         const { zoom0, panX0, panY0, startX, startY } = panRef.current;
         // Dragging up = zoom in, dragging down = zoom out
-        const factor = Math.exp(-dy * 0.01); 
+        const factor = Math.exp(-dy * 0.01);
         const newZoom = Math.max(0.05, Math.min(20, zoom0 * factor));
-        
+
         // Zoom relative to the point where the drag started
         const mx = startX - canvas.getBoundingClientRect().left;
         const my = startY - canvas.getBoundingClientRect().top;
         const newPanX = mx - (mx - panX0) * (newZoom / zoom0);
         const newPanY = my - (my - panY0) * (newZoom / zoom0);
-        
+
         setView({ zoom: newZoom, panX: newPanX, panY: newPanY });
       } else {
         setView({ panX: panRef.current.panX0 + dx, panY: panRef.current.panY0 + dy });
@@ -1112,7 +1208,8 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
     // Update brush circle cursor position (direct DOM, no React re-render)
     if (brushCircleRef.current) {
-      const inDeformMode = editorRef.current.meshEditMode && editorRef.current.meshSubMode === 'deform';
+      const inDeformMode = (editorRef.current.meshEditMode && editorRef.current.meshSubMode === 'deform')
+        || editorRef.current.blendShapeEditMode;
       if (inDeformMode) {
         const rect = canvas.getBoundingClientRect();
         brushCircleRef.current.setAttribute('cx', e.clientX - rect.left);
@@ -1132,7 +1229,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     // ── Brush deform (edit mode, deform sub-mode) ──────────────────────────
     if (dragRef.current.mode === 'brush') {
       const { partId, startWorldX, startWorldY, verticesSnap, allUvs, affected,
-              imageWidth, imageHeight, iwm } = dragRef.current;
+        imageWidth, imageHeight, iwm } = dragRef.current;
 
       const worldDx = worldX - startWorldX;
       const worldDy = worldY - startWorldY;
@@ -1155,6 +1252,25 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
       sceneRef.current?.parts.uploadPositions(partId, newVerts, allUvs);
       isDirtyRef.current = true;
 
+      // Blend shape edit mode — write to shape key deltas instead of mesh or draftPose
+      if (editorRef.current.blendShapeEditMode) {
+        const shapeId = editorRef.current.activeBlendShapeId;
+        updateProject((proj) => {
+          const node = proj.nodes.find(n => n.id === partId);
+          const shape = node?.blendShapes?.find(s => s.id === shapeId);
+          if (!shape) return;
+          for (const { index, weight } of affected) {
+            const nx = verticesSnap[index].x + localDx * weight;
+            const ny = verticesSnap[index].y + localDy * weight;
+            shape.deltas[index] = {
+              dx: nx - node.mesh.vertices[index].restX,
+              dy: ny - node.mesh.vertices[index].restY,
+            };
+          }
+        });
+        return;
+      }
+
       // In animation mode + deform: store to draftPose — don't bake into base mesh.
       // The user will press K to commit as a keyframe.
       if (editorRef.current.editorMode === 'animation' && meshSubMode === 'deform') {
@@ -1172,7 +1288,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
           node.mesh.vertices[index].x = nx;
           node.mesh.vertices[index].y = ny;
           if (meshSubMode === 'adjust') {
-            node.mesh.uvs[index * 2]     = nx / (imageWidth  ?? 1);
+            node.mesh.uvs[index * 2] = nx / (imageWidth ?? 1);
             node.mesh.uvs[index * 2 + 1] = ny / (imageHeight ?? 1);
           }
         }
@@ -1182,7 +1298,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
     // ── Single-vertex drag (non-edit-mode path) ────────────────────────────
     const { partId, vertexIndex, startWorldX, startWorldY, startLocalX, startLocalY,
-            imageWidth, imageHeight, iwm } = dragRef.current;
+      imageWidth, imageHeight, iwm } = dragRef.current;
 
     const worldDx = worldX - startWorldX;
     const worldDy = worldY - startWorldY;
@@ -1195,10 +1311,10 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
       updateProject((proj) => {
         const node = proj.nodes.find(n => n.id === partId);
         if (!node?.mesh) return;
-        node.mesh.vertices[vertexIndex].x      = newLocalX;
-        node.mesh.vertices[vertexIndex].y      = newLocalY;
-        node.mesh.uvs[vertexIndex * 2]         = newLocalX / (imageWidth  ?? 1);
-        node.mesh.uvs[vertexIndex * 2 + 1]     = newLocalY / (imageHeight ?? 1);
+        node.mesh.vertices[vertexIndex].x = newLocalX;
+        node.mesh.vertices[vertexIndex].y = newLocalY;
+        node.mesh.uvs[vertexIndex * 2] = newLocalX / (imageWidth ?? 1);
+        node.mesh.uvs[vertexIndex * 2 + 1] = newLocalY / (imageHeight ?? 1);
       });
     } else {
       updateProject((proj) => {
@@ -1254,69 +1370,138 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
   useEffect(() => { if (saveRef) saveRef.current = handleSave; }, [saveRef, handleSave]);
 
-  const handleLoad = useCallback(async () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.stretch';
-    input.onchange = async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      try {
-        const { project: loadedProject, images } = await loadProject(file);
+  const handleLoadProject = useCallback(async (file) => {
+    if (!file) return;
+    try {
+      const { project: loadedProject, images } = await loadProject(file);
 
-        // Destroy all GPU resources
-        if (sceneRef.current) {
-          sceneRef.current.parts.destroyAll();
-        }
-
-        // Load project into store
-        useProjectStore.getState().loadProject(loadedProject);
-
-        // Rebuild imageDataMapRef from loaded textures
-        imageDataMapRef.current.clear();
-        for (const [partId, img] of images) {
-          const off = document.createElement('canvas');
-          off.width = img.width;
-          off.height = img.height;
-          const ctx = off.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          const imageData = ctx.getImageData(0, 0, img.width, img.height);
-          imageDataMapRef.current.set(partId, imageData);
-        }
-
-        // Re-upload to GPU (use loadedProject, not projectRef which hasn't updated yet)
-        for (const node of loadedProject.nodes) {
-          if (node.type !== 'part') continue;
-          if (images.has(node.id)) {
-            sceneRef.current?.parts.uploadTexture(node.id, images.get(node.id));
-          }
-          if (node.mesh) {
-            sceneRef.current?.parts.uploadMesh(node.id, node.mesh);
-          } else if (node.imageWidth && node.imageHeight) {
-            sceneRef.current?.parts.uploadQuadFallback(node.id, node.imageWidth, node.imageHeight);
-          }
-        }
-
-        // Reset animation playback state
-        useAnimationStore.getState().resetPlayback?.();
-
-        // Reset editor selection
-        useEditorStore.getState().setSelection([]);
-
-        isDirtyRef.current = true;
-        
-        // Center the loaded project view
-        const cw = loadedProject.canvas?.width || 800;
-        const ch = loadedProject.canvas?.height || 600;
-        centerView(cw, ch);
-      } catch (err) {
-        console.error('Failed to load project:', err);
+      // Destroy all GPU resources
+      if (sceneRef.current) {
+        sceneRef.current.parts.destroyAll();
       }
-    };
-    input.click();
+
+      // Load project into store
+      useProjectStore.getState().loadProject(loadedProject);
+
+      // Rebuild imageDataMapRef from loaded textures
+      imageDataMapRef.current.clear();
+      for (const [partId, img] of images) {
+        const off = document.createElement('canvas');
+        off.width = img.width;
+        off.height = img.height;
+        const ctx = off.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, img.width, img.height);
+        imageDataMapRef.current.set(partId, imageData);
+      }
+
+      // Re-upload to GPU
+      for (const node of loadedProject.nodes) {
+        if (node.type !== 'part') continue;
+        if (images.has(node.id)) {
+          sceneRef.current?.parts.uploadTexture(node.id, images.get(node.id));
+        }
+        if (node.mesh) {
+          sceneRef.current?.parts.uploadMesh(node.id, node.mesh);
+        } else if (node.imageWidth && node.imageHeight) {
+          sceneRef.current?.parts.uploadQuadFallback(node.id, node.imageWidth, node.imageHeight);
+        }
+      }
+
+      // Reset animation playback state
+      useAnimationStore.getState().resetPlayback?.();
+
+      // Reset editor selection
+      useEditorStore.getState().setSelection([]);
+
+      isDirtyRef.current = true;
+
+      // Center the loaded project view
+      const cw = loadedProject.canvas?.width || 800;
+      const ch = loadedProject.canvas?.height || 600;
+      centerView(cw, ch);
+    } catch (err) {
+      console.error('Failed to load project:', err);
+    }
+  }, [centerView]);
+
+  useEffect(() => {
+    if (loadRef) loadRef.current = handleLoadProject;
+  }, [loadRef, handleLoadProject]);
+
+  /* ── File Upload Handlers ───────────────────────────────────────────── */
+  const handlePanelClick = useCallback(() => {
+    fileInputRef.current?.click();
   }, []);
 
-  useEffect(() => { if (loadRef) loadRef.current = handleLoad; }, [loadRef, handleLoad, centerView]);
+  const handleFileChange = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.name.toLowerCase().endsWith('.stretch')) {
+      handleLoadProject(file);
+    } else if (file.name.toLowerCase().endsWith('.psd')) {
+      importPsdFile(file);
+    } else if (file.type.startsWith('image/')) {
+      importPng(file);
+    }
+
+    // Clear input so same file can be uploaded again if needed
+    e.target.value = '';
+  }, [handleLoadProject, importPsdFile, importPng]);
+
+  /**
+   * Reset the current project to empty state.
+   */
+  const handleReset = useCallback(() => {
+    // 1. Destroy GPU resources
+    if (sceneRef.current) {
+      sceneRef.current.parts.destroyAll();
+    }
+
+    // 2. Clear store
+    useProjectStore.getState().resetProject();
+
+    // 3. Clear local cache
+    imageDataMapRef.current.clear();
+
+    // 4. Reset editor state
+    useAnimationStore.getState().resetPlayback?.();
+    useEditorStore.getState().setSelection([]);
+
+    isDirtyRef.current = true;
+
+    // 5. Center view
+    centerView(800, 600);
+  }, [centerView]);
+
+  useEffect(() => {
+    if (resetRef) resetRef.current = handleReset;
+  }, [resetRef, handleReset]);
+
+  /**
+   * Capture a thumbnail of the current staging area.
+   */
+  const captureStaging = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+
+    // Create an offscreen canvas for downsizing
+    const off = document.createElement('canvas');
+    const MAX_W = 400;
+    const scale = Math.min(1, MAX_W / canvas.width);
+    off.width = canvas.width * scale;
+    off.height = canvas.height * scale;
+
+    const ctx = off.getContext('2d');
+    ctx.drawImage(canvas, 0, 0, off.width, off.height);
+
+    return off.toDataURL('image/webp', 0.8);
+  }, []);
+
+  useEffect(() => {
+    if (thumbCaptureRef) thumbCaptureRef.current = captureStaging;
+  }, [thumbCaptureRef, captureStaging]);
 
   /* ── Export frame capture ────────────────────────────────────────────── */
   const captureExportFrame = useCallback(({
@@ -1326,11 +1511,11 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     cropOffset = null,
   }) => {
     const canvas = canvasRef.current;
-    const scene  = sceneRef.current;
+    const scene = sceneRef.current;
     if (!canvas || !scene) return null;
 
     // Set canvas to export dimensions
-    canvas.width  = exportWidth;
+    canvas.width = exportWidth;
     canvas.height = exportHeight;
 
     // Mock editor: 1:1 pixel space, no overlays
@@ -1387,7 +1572,7 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
     return dataUrl;
   }, []);
 
-  useEffect(() => { if (captureRef) captureRef.current = captureExportFrame; }, [captureRef, captureExportFrame]);
+  useEffect(() => { if (exportCaptureRef) exportCaptureRef.current = captureExportFrame; }, [exportCaptureRef, captureExportFrame]);
 
   /* ── Cursor style ────────────────────────────────────────────────────── */
   const toolCursor = 'crosshair';
@@ -1439,15 +1624,74 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
 
       {/* Drop hint overlay */}
       {project.nodes.length === 0 && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none gap-3">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-foreground/40">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-            <polyline points="17 8 12 3 7 8"/>
-            <line x1="12" y1="3" x2="12" y2="15"/>
-          </svg>
-          <p className="text-muted-foreground/60 text-sm font-medium select-none">
-            Drop a PNG or PSD here to begin
-          </p>
+        <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileChange}
+            accept=".stretch,.psd,image/*"
+            className="hidden"
+          />
+          <div
+            onClick={handlePanelClick}
+            className="max-w-md w-full flex flex-col items-center gap-8 p-10 rounded-[3rem] 
+                       border border-border/40 bg-card/30 backdrop-blur-2xl 
+                       hover:bg-card/40 hover:border-primary/30 hover:scale-[1.01]
+                       transition-all duration-300 group cursor-pointer shadow-2xl ring-1 ring-white/5
+                       animate-in fade-in slide-in-from-bottom-4 duration-700 ease-out pointer-events-auto"
+          >
+            {/* Upload Button */}
+            <div className="w-24 h-24 rounded-[2rem] bg-primary/10 flex items-center justify-center 
+                            border border-primary/20 group-hover:bg-primary/20 group-hover:scale-110 
+                            transition-all duration-500 shadow-xl shadow-primary/10">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-primary">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-3xl font-bold tracking-tight text-foreground/90 leading-tight">
+                Drop or <span className="text-primary">click</span> to upload a <br />
+                <span className="text-foreground underline underline-offset-8 decoration-primary/30">.stretch</span> or <span className="text-foreground underline underline-offset-8 decoration-primary/30">PSD/PNG</span>
+              </p>
+              <p className="text-sm text-muted-foreground/60 select-none">
+                Character rigging and animation in seconds.
+              </p>
+            </div>
+
+            {/* Separator */}
+            <div className="w-full h-px bg-gradient-to-r from-transparent via-border/60 to-transparent" />
+
+            {/* Help / Guidance Card Section */}
+            <div className="w-full space-y-4 pt-2">
+              <h3 className="text-xs font-bold text-foreground/70 uppercase tracking-widest">Don't have a layered PSD?</h3>
+
+              <a
+                href="https://huggingface.co/spaces/24yearsold/see-through-demo"
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="flex items-center justify-center gap-2 w-full py-4 rounded-2xl 
+                           bg-primary text-primary-foreground text-xs font-black 
+                           hover:brightness-110 active:scale-[0.98] transition-all 
+                           shadow-lg shadow-primary/25"
+              >
+                LAYER-IFY YOUR IMAGE <br /> (Free HuggingFace Space)
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="opacity-80">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
+              </a>
+
+              <p className="text-[10px] text-muted-foreground/50 leading-relaxed max-w-[280px] mx-auto pointer-events-auto">
+                Provided by the authors of <a href="https://github.com/shitagaki-lab/see-through" target="_blank" rel="noopener noreferrer" className="text-primary/80 hover:underline font-medium" onClick={(e) => e.stopPropagation()}>See-through</a>,
+                an AI model that automatically decomposes single character illustrations into ready-to-animate layers.
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1474,8 +1718,8 @@ export default function CanvasViewport({ remeshRef, deleteMeshRef, saveRef, load
           <AlertDialogHeader>
             <AlertDialogTitle>Wipe current project?</AlertDialogTitle>
             <AlertDialogDescription>
-              Importing a new PSD will permanently delete all existing layers, 
-              meshes, and animations in your current project. This action 
+              Importing a new PSD will permanently delete all existing layers,
+              meshes, and animations in your current project. This action
               cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>

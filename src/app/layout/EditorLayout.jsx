@@ -1,4 +1,5 @@
 import React, { useRef, useCallback } from 'react';
+import { cn } from '@/lib/utils';
 import { useEditorStore } from '@/store/editorStore';
 import {
   ResizableHandle,
@@ -12,9 +13,15 @@ import { TimelinePanel } from '@/components/timeline/TimelinePanel';
 import { AnimationListPanel } from '@/components/animation/AnimationListPanel';
 import { ArmaturePanel } from '@/components/armature/ArmaturePanel';
 import { ExportModal } from '@/components/export/ExportModal';
-import { Save, FolderOpen, Palette, Sun, Moon, SquareChartGantt, Download } from 'lucide-react';
+import { PreferencesModal } from '@/components/preferences/PreferencesModal';
+import { Save, FolderOpen, FilePlus, Palette, Sun, Moon, SquareChartGantt, Download, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { HelpIcon } from '@/components/ui/help-icon';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { useProjectStore } from '@/store/projectStore';
 import { useAnimationStore } from '@/store/animationStore';
 import { useTheme, AVAILABLE_FONTS } from '@/contexts/ThemeProvider';
@@ -27,6 +34,20 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { makeLocalMatrix } from '@/renderer/transforms';
+import { SaveModal } from '@/components/save/SaveModal';
+import { LoadModal } from '@/components/load/LoadModal';
+import { saveToDb } from '@/io/projectDb';
+import { saveProject } from '@/io/projectFile';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 
 export default function EditorLayout() {
@@ -60,8 +81,21 @@ export default function EditorLayout() {
 
   const saveRef = useRef(null);
   const loadRef = useRef(null);
-  const captureRef = useRef(null);
+  const resetRef = useRef(null);
+  const exportCaptureRef = useRef(null);
+  const thumbCaptureRef = useRef(null);
   const [exportModalOpen, setExportModalOpen] = React.useState(false);
+  const [preferencesOpen, setPreferencesOpen] = React.useState(false);
+  
+  // Library / Save system state
+  const [saveModalOpen, setSaveModalOpen] = React.useState(false);
+  const [loadModalOpen, setLoadModalOpen] = React.useState(false);
+  const [currentDbProjectId, setCurrentDbProjectId] = React.useState(null);
+  const [currentDbProjectName, setCurrentDbProjectName] = React.useState(null);
+
+  // Loading confirmations
+  const [confirmWipe, setConfirmWipe] = React.useState({ open: false, type: null, data: null });
+  const [confirmStore, setConfirmStore] = React.useState({ open: false, file: null });
 
   const {
     themeMode, setThemeMode,
@@ -70,19 +104,6 @@ export default function EditorLayout() {
     fontFamily, setFontFamily,
     fontSize, setFontSize,
   } = useTheme();
-
-  const handleThemeSelectClick = () => {
-    const config = themeMode === 'dark' || (themeMode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches) ? {
-      title: 'Select Dark Theme',
-      themes: darkThemePresets,
-      onSelect: setDarkTheme,
-    } : {
-      title: 'Select Light Theme',
-      themes: lightThemePresets,
-      onSelect: setLightTheme,
-    };
-    openThemeModal(config);
-  };
 
   // Compute bounding box of all parts across all animation keyframes + rest pose
   const computeFitBounds = useCallback(() => {
@@ -150,21 +171,80 @@ export default function EditorLayout() {
     };
   }, [nodes, animations]);
 
+  // ── Project Loading Handlers ──────────────────────────────────────────────
+
+  const handleLoadRecord = useCallback((record) => {
+    if (!record) return;
+    const file = new File([record.blob], `${record.name}.stretch`, { type: 'application/zip' });
+    loadRef.current?.(file);
+    setCurrentDbProjectId(record.id);
+    setCurrentDbProjectName(record.name);
+  }, [loadRef]);
+
+  const handleCheckStore = useCallback((file) => {
+    if (!file) return;
+    setConfirmStore({ open: true, file });
+  }, []);
+
+  const finalizeLoadFile = useCallback(async (file, shouldStore) => {
+    if (!file) return;
+    setConfirmStore({ open: false, file: null });
+
+    // 1. Initial load into engine
+    await loadRef.current?.(file);
+
+    if (shouldStore) {
+      // 2. Save immediately to DB to anchor the session
+      try {
+        const name = file.name.replace(/\.stretch$/i, '');
+        const blob = await file.slice(); // Use original file blob
+        const thumbnail = thumbCaptureRef.current?.() || '';
+        const id = await saveToDb(null, name, blob, thumbnail);
+        
+        setCurrentDbProjectId(id);
+        setCurrentDbProjectName(name);
+      } catch (err) {
+        console.error('[EditorLayout] Failed to auto-store project:', err);
+      }
+    } else {
+      // Unanchored session
+      setCurrentDbProjectId(null);
+      setCurrentDbProjectName(null);
+    }
+  }, [loadRef]);
+
   return (
     <div className="flex h-screen w-full flex-col bg-background text-foreground overflow-hidden">
       {/* Top bar */}
       <header className="h-10 border-b flex items-center px-4 shrink-0 bg-card gap-3 relative">
         <div className="flex items-center gap-3 h-full">
           <span className="font-semibold text-sm select-none tracking-tight">Stretchy Studio</span>
-          <span className="text-xs text-muted-foreground border border-border/50 px-1.5 py-0.5 font-mono">v0.1</span>
+          <span className="text-xs text-muted-foreground border border-border/50 px-1.5 py-0.5 font-mono">v0.2</span>
 
           <div className="flex h-full items-stretch border-l border-r ml-1 mr-2">
             <Button
               variant="ghost"
               size="icon"
               className="h-full w-9 rounded-none hover:bg-muted"
-              onClick={() => saveRef.current?.()}
-              title="Save project (.stretch)"
+              onClick={() => {
+                if (nodes.length > 0) {
+                  setConfirmWipe({ open: true, type: 'new' });
+                } else {
+                  resetRef.current?.();
+                  setCurrentDbProjectId(null);
+                  setCurrentDbProjectName(null);
+                }
+              }}
+              title="New project"
+            >
+              <FilePlus className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-full w-9 rounded-none border-l hover:bg-muted"
+              onClick={() => setSaveModalOpen(true)}
+              title="Save project"
             >
               <Save className="h-4 w-4" />
             </Button>
@@ -172,8 +252,8 @@ export default function EditorLayout() {
               variant="ghost"
               size="icon"
               className="h-full w-9 rounded-none border-l hover:bg-muted"
-              onClick={() => loadRef.current?.()}
-              title="Load project (.stretch)"
+              onClick={() => setLoadModalOpen(true)}
+              title="Load project"
             >
               <FolderOpen className="h-4 w-4" />
             </Button>
@@ -295,106 +375,63 @@ export default function EditorLayout() {
               </PopoverContent>
             </Popover>
 
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-full w-9 rounded-none border-l hover:bg-muted"
-                  title="Customize Theme"
-                >
-                  <Palette className="h-4 w-4" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-4 space-y-4 shadow-2xl border-border/60">
-                <div className="flex items-center gap-2">
-                  <ToggleGroup
-                    type="single"
-                    value={themeMode}
-                    onValueChange={(value) => {
-                      if (value) setThemeMode(value);
-                    }}
-                    aria-label="Theme mode"
-                  >
-                    <ToggleGroupItem value="light" aria-label="Light mode">
-                      <Sun className="h-4 w-4" />
-                    </ToggleGroupItem>
-                    <ToggleGroupItem value="dark" aria-label="Dark mode">
-                      <Moon className="h-4 w-4" />
-                    </ToggleGroupItem>
-                  </ToggleGroup>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleThemeSelectClick}
-                  >
-                    Select Theme
-                  </Button>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="font-select" className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">Font Family</Label>
-                  <Select value={fontFamily} onValueChange={setFontFamily}>
-                    <SelectTrigger id="font-select" className="h-8 text-xs">
-                      <SelectValue placeholder="Select a font" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {AVAILABLE_FONTS.map((font) => (
-                        <SelectItem key={font.id} value={font.id} className="text-xs">
-                          {font.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="font-size-slider" className="text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">Font Size ({fontSize}px)</Label>
-                  <Slider
-                    id="font-size-slider"
-                    min={12}
-                    max={20}
-                    step={1}
-                    value={[fontSize]}
-                    onValueChange={(value) => setFontSize(value[0])}
-                  />
-                </div>
-              </PopoverContent>
-            </Popover>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-full w-9 rounded-none border-l hover:bg-muted"
+              onClick={() => setPreferencesOpen(true)}
+              title="Preferences"
+            >
+              <Settings2 className="h-4 w-4" />
+            </Button>
           </div>
         </div>
 
         {/* Center Toggle */}
-        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center bg-muted/30 rounded-lg p-0.5 border border-border/40">
-          <button
-            onClick={() => setEditorMode('staging')}
-            className={[
-              'px-3 py-1 rounded-md text-[13px] font-semibold transition-all flex items-center gap-1.5',
-              !isAnimationMode
-                ? 'bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/20'
-                : 'text-muted-foreground hover:text-foreground'
-            ].join(' ')}
-          >
-            Staging
-            <HelpIcon tip="In Staging mode, you set the base layout, mesh structure, and joint positions." className="opacity-40 hover:opacity-100" />
-          </button>
-          <button
-            onClick={() => {
-              setEditorMode('animation');
-              captureRestPose(project.nodes);
-            }}
-            className={[
-              'px-3 py-1 rounded-md text-[13px] font-semibold transition-all flex items-center gap-1.5 ml-0.5',
-              isAnimationMode
-                ? 'bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/20'
-                : 'text-muted-foreground hover:text-foreground'
-            ].join(' ')}
-          >
-            Animation
-            <HelpIcon tip="In Animation mode, you create keyframes on the timeline." className="opacity-40 hover:opacity-100" />
-          </button>
-        </div>
+        <TooltipProvider delayDuration={400}>
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center bg-muted/30 rounded-lg p-0.5 border border-border/40">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => setEditorMode('staging')}
+                  className={cn(
+                    'px-3 py-1 rounded-md text-[13px] font-semibold transition-all flex items-center gap-1.5',
+                    !isAnimationMode
+                      ? 'bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/20'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  Staging
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                In Staging mode, you set the base layout, mesh structure, and joint positions.
+              </TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => {
+                    setEditorMode('animation');
+                    captureRestPose(project.nodes);
+                  }}
+                  className={cn(
+                    'px-3 py-1 rounded-md text-[13px] font-semibold transition-all flex items-center gap-1.5 ml-0.5',
+                    isAnimationMode
+                      ? 'bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/20'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  Animation
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                In Animation mode, you create keyframes on the timeline.
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        </TooltipProvider>
 
         <div className="flex-1" />
         <span className="text-xs text-muted-foreground hidden sm:block">Scroll to zoom · Alt+drag to pan</span>
@@ -425,7 +462,9 @@ export default function EditorLayout() {
                   deleteMeshRef={deleteMeshRef}
                   saveRef={saveRef}
                   loadRef={loadRef}
-                  captureRef={captureRef}
+                  resetRef={resetRef}
+                  exportCaptureRef={exportCaptureRef}
+                  thumbCaptureRef={thumbCaptureRef}
                 />
               </ResizablePanel>
               {isAnimationMode && (
@@ -475,8 +514,104 @@ export default function EditorLayout() {
       <ExportModal
         open={exportModalOpen}
         onClose={() => setExportModalOpen(false)}
-        captureRef={captureRef}
+        captureRef={exportCaptureRef}
       />
+
+      <PreferencesModal
+        open={preferencesOpen}
+        onOpenChange={setPreferencesOpen}
+      />
+
+      {/* Save Modal */}
+      <SaveModal
+        open={saveModalOpen}
+        onOpenChange={setSaveModalOpen}
+        project={project}
+        captureRef={thumbCaptureRef}
+        currentDbProjectId={currentDbProjectId}
+        currentDbProjectName={currentDbProjectName}
+        onSavedToDb={(id, name) => {
+          setCurrentDbProjectId(id);
+          setCurrentDbProjectName(name);
+        }}
+      />
+
+      {/* Load Modal */}
+      <LoadModal
+        open={loadModalOpen}
+        onOpenChange={setLoadModalOpen}
+        onLoadFromDb={(record) => {
+          if (nodes.length > 0) {
+            setConfirmWipe({ open: true, type: 'db', data: record });
+          } else {
+            handleLoadRecord(record);
+          }
+        }}
+        onLoadFromFile={(file) => {
+          if (nodes.length > 0) {
+            setConfirmWipe({ open: true, type: 'file', data: file });
+          } else {
+            handleCheckStore(file);
+          }
+        }}
+      />
+
+      {/* Wipe Confirmation */}
+      <AlertDialog 
+        open={confirmWipe.open} 
+        onOpenChange={(open) => !open && setConfirmWipe({ ...confirmWipe, open: false })}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Replace current project?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete all existing layers, meshes, and 
+              animations in your current workspace. Unsaved changes will be lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={() => {
+                if (confirmWipe.type === 'db') handleLoadRecord(confirmWipe.data);
+                else if (confirmWipe.type === 'file') handleCheckStore(confirmWipe.data);
+                else if (confirmWipe.type === 'new') {
+                  resetRef.current?.();
+                  setCurrentDbProjectId(null);
+                  setCurrentDbProjectName(null);
+                }
+                setConfirmWipe({ open: false, type: null, data: null });
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Replace Workspace
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Store in Library Confirmation */}
+      <AlertDialog 
+        open={confirmStore.open} 
+        onOpenChange={(open) => !open && setConfirmStore({ ...confirmStore, open: false })}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Store imported project in Library?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Would you like to save this project to your library so you can access it easily later?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => finalizeLoadFile(confirmStore.file, false)}>
+              Skip
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={() => finalizeLoadFile(confirmStore.file, true)}>
+              Save to Library
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -6,7 +6,7 @@
  *     tracks: [{ nodeId, property, keyframes: [{ time (ms), value, easing }] }] }
  *
  * Supported properties:
- *   'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY' | 'opacity'
+ *   'x' | 'y' | 'rotation' | 'scaleX' | 'scaleY' | 'opacity' | 'visible' | 'mesh_verts' | 'blendShape:{id}'
  */
 
 function lerp(a, b, t) {
@@ -202,6 +202,9 @@ export function upsertKeyframe(keyframes, timeMs, value, easing = 'ease-both') {
 /** All keyframeable transform properties (in display order) */
 export const KEYFRAME_PROPS = ['x', 'y', 'rotation', 'scaleX', 'scaleY', 'opacity', 'visible'];
 
+/** Prefix for blend shape influence track properties */
+export const BLEND_SHAPE_TRACK_PREFIX = 'blendShape:';
+
 /** Human-readable labels */
 export const PROP_LABELS = {
   x:        'X',
@@ -216,9 +219,14 @@ export const PROP_LABELS = {
 /**
  * Get the current value of a property from a node (used when inserting keyframes).
  * Reads from transform for transform props, directly from node for opacity.
+ * Handles blend shape influences via blendShape:{shapeId} property names.
  */
 export function getNodePropertyValue(node, property) {
   if (property === 'opacity') return node.opacity ?? 1;
   if (property === 'visible') return node.visible ?? true;
+  if (property.startsWith(BLEND_SHAPE_TRACK_PREFIX)) {
+    const shapeId = property.slice(BLEND_SHAPE_TRACK_PREFIX.length);
+    return node.blendShapeValues?.[shapeId] ?? 0;
+  }
   return node.transform?.[property] ?? 0;
 }

@@ -34,6 +34,9 @@ export const useAnimationStore = create((set, get) => ({
   /** Internal: last rAF timestamp for delta computation */
   _lastTimestamp: null,
 
+  /** Increments each time the animation loops — lets audio hook detect loop events */
+  loopCount: 0,
+
   /**
    * Rest pose — snapshot of every node's transform + opacity captured when
    * entering animation mode.  Used to auto-insert a "base" keyframe at
@@ -120,15 +123,17 @@ export const useAnimationStore = create((set, get) => ({
     currentTime: (s.startFrame / s.fps) * 1000,
     _lastTimestamp: null,
     draftPose: new Map(),
+    loopCount: 0,
   })),
 
   seekFrame: (frame) => set((s) => ({
     currentTime: (frame / s.fps) * 1000,
     _lastTimestamp: null,
     draftPose: new Map(),
+    loopCount: 0,
   })),
 
-  seekTime: (ms) => set({ currentTime: ms, _lastTimestamp: null, draftPose: new Map() }),
+  seekTime: (ms) => set({ currentTime: ms, _lastTimestamp: null, draftPose: new Map(), loopCount: 0 }),
 
   // ── rAF tick ──────────────────────────────────────────────────────────────
   /**
@@ -155,17 +160,19 @@ export const useAnimationStore = create((set, get) => ({
     }
 
     let newTime = s.currentTime + deltaMs;
+    let loopCount = s.loopCount;
 
     if (newTime >= endMs) {
       if (s.loop) {
         newTime = startMs + ((newTime - startMs) % rangeMs);
+        loopCount += 1;
       } else {
         set({ isPlaying: false, currentTime: endMs, _lastTimestamp: null });
         return true;
       }
     }
 
-    set({ currentTime: newTime, _lastTimestamp: timestamp });
+    set({ currentTime: newTime, _lastTimestamp: timestamp, loopCount });
     return true;
   },
 
@@ -181,6 +188,7 @@ export const useAnimationStore = create((set, get) => ({
       isPlaying:         false,
       _lastTimestamp:    null,
       draftPose:         new Map(),
+      loopCount:         0,
       // start/end frames derived from duration if not present
       startFrame:        0,
       endFrame:          Math.round(((anim.duration ?? 2000) / 1000) * (anim.fps ?? 24)),
@@ -199,5 +207,6 @@ export const useAnimationStore = create((set, get) => ({
     endFrame:          48,
     fps:               24,
     loopKeyframes:     true,
+    loopCount:         0,
   }),
 }));

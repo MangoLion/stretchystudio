@@ -40,6 +40,10 @@ Unlike traditional bone-based systems, Stretchy Studio focuses on a **timeline-f
 - **Pivot Calibration**: Accurate pivot placement for natural rotations and scaling.
 - **Selection Isolation**: Selection and Gizmos automatically lock/hide when skeleton is active AND a rig exists to focus on bone joint setup. Standard selection remains enabled for un-rigged projects.
 - **Alpha-Based Selection**: Pixel-perfect selection that works instantly on both textured quads and complex meshes.
+- **Shape Keys (Blend Shapes)**: Blender-inspired vertex delta system. Create multiple mesh variations (e.g., "Mouth Open", "Angry Eye") and blend them additively using influence sliders (0.0–1.0).
+  - **Deltas-Based**: Stores offsets from the rest position, making shapes independent of staging-mode deformations.
+  - **Direct Brush Editing**: Use the deform brush in a dedicated "Edit Mode" (pencil icon) to sculpt shapes directly on the canvas.
+  - **Live Cumulative Preview**: Real-time canvas updates as you blend multiple shapes together.
 - **Inline Help System**: Reusable `HelpIcon` components provide instant tooltips for complex parameters across the UI (Inspector, Timeline, Rigging Wizard, and Mode Toggles).
 
 ### 🎬 Professional Timeline
@@ -47,6 +51,7 @@ Unlike traditional bone-based systems, Stretchy Studio focuses on a **timeline-f
 - **Dynamic Defaults**: Includes **Auto Keyframe** (automatically create keyframes on property change) and **Loop Keyframes** (seamless looping between first and last keyframes) enabled by default.
 - **Multi-Clip Management**: Create multiple animation sequences (e.g., *Idle*, *Walk*, *Attack*) within a single project.
 - **Direct Vertex Keyframing**: "Warp" your illustrations by animating individual mesh vertices for organic motion.
+- **Shape Key Tracks**: Animate blend shape influences smoothly over time. Tracks support standard easing and automatic cleanup of redundant `mesh_verts` keys.
 - **Smooth Interpolation**: High-performance rendering loop with real-time pose blending.
 
 ### 📤 Versatile Export
@@ -130,6 +135,15 @@ src/
 5. **Export**: (Coming Soon) Export as a packed spritesheet or PNG sequence.
 
 ### Rigged Character (See-Through PSD)
+Stretchy Studio is highly optimized for the [**See-Through**](https://github.com/shitagaki-lab/see-through) pipeline ([Paper](https://arxiv.org/abs/2602.03749)). It transforms a single anime illustration into a layered PSD, which Stretchy Studio can then auto-rig.
+
+#### How to get decomposed PSDs
+- **Recommended**: [Free Hugging Face Demo](https://huggingface.co/spaces/24yearsold/see-through-demo) (Quickest)
+- **Advanced**: [See-through Repository](https://github.com/shitagaki-lab/see-through) or [Windows WebUI](https://github.com/BeamManP/see-through-webui)
+
+> [!NOTE]
+> **Style Compatibility**: See-Through is specifically trained on **anime/VTuber** styles. Realistic styles may not decompose correctly.
+
 1. **Import & Rig**: Drag a see-through PSD character → 3-step wizard opens:
    - Choose rigging method: *Rig manually* (instant heuristic) or *Rig with DWPose* (AI-powered)
    - Adjust joint positions on canvas if needed

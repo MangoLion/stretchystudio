@@ -12,9 +12,7 @@ import '@fontsource/source-sans-3';
 import '@fontsource/poppins';
 
 createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <ThemeProvider>
-      <App />
-    </ThemeProvider>
-  </StrictMode>,
+  <ThemeProvider>
+    <App />
+  </ThemeProvider>
 )

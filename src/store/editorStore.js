@@ -65,6 +65,12 @@ export const useEditorStore = create((set) => ({
   /** When true, property changes in animation mode automatically create/update keyframes */
   autoKeyframe: true,
 
+  /** When true, brush writes to the active blend shape's deltas instead of mesh vertices */
+  blendShapeEditMode: false,
+
+  /** The ID of the blend shape currently being edited (null if not in edit mode) */
+  activeBlendShapeId: null,
+
   setSelection: (nodeIds) => set((state) => ({
     selection: nodeIds,
     // Exit mesh edit mode if selection changes to a different node or clears
@@ -73,6 +79,17 @@ export const useEditorStore = create((set) => ({
       nodeIds[0] === state.selection[0]
         ? state.meshEditMode
         : false,
+    // Also exit blend shape edit mode if selection changes
+    blendShapeEditMode: state.blendShapeEditMode &&
+      nodeIds.length > 0 &&
+      nodeIds[0] === state.selection[0]
+        ? state.blendShapeEditMode
+        : false,
+    activeBlendShapeId: state.blendShapeEditMode &&
+      nodeIds.length > 0 &&
+      nodeIds[0] === state.selection[0]
+        ? state.activeBlendShapeId
+        : null,
   })),
   setMeshEditMode:      (on)       => set({ meshEditMode: on, toolMode: 'select' }),
   setMeshSubMode:       (mode)     => set({ meshSubMode: mode, toolMode: 'select' }),
@@ -99,4 +116,20 @@ export const useEditorStore = create((set) => ({
   }),
   setExpandedGroups:    (ids)      => set({ expandedGroups: new Set(ids) }),
   setAutoKeyframe:      (on)       => set({ autoKeyframe: on }),
+
+  /** Enter blend shape edit mode for a specific shape */
+  enterBlendShapeEditMode: (shapeId) => set({
+    blendShapeEditMode: true,
+    activeBlendShapeId: shapeId,
+    meshEditMode: true,
+    meshSubMode: 'deform',
+    toolMode: 'select',
+  }),
+
+  /** Exit blend shape edit mode */
+  exitBlendShapeEditMode: () => set({
+    blendShapeEditMode: false,
+    activeBlendShapeId: null,
+    meshEditMode: false,
+  }),
 }));

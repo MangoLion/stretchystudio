@@ -8,6 +8,7 @@ import JSZip from 'jszip';
 export async function saveProject(project) {
   const zip = new JSZip();
   const texturesFolder = zip.folder('textures');
+  const audiosFolder = zip.folder('audios');
 
   // Serialize textures: fetch blob URL → store as PNG files
   const serializedTextures = [];
@@ -20,6 +21,42 @@ export async function saveProject(project) {
     } catch (err) {
       console.error(`Failed to fetch texture ${tex.id}:`, err);
       serializedTextures.push({ id: tex.id, source: '' });
+    }
+  }
+
+  // Serialize audio tracks: fetch blob URL → store in audios/ folder
+  const serializedAnimations = project.animations.map(anim => ({
+    ...anim,
+    audioTracks: (anim.audioTracks ?? []).map(track => {
+      const t = { ...track };
+      if (track.sourceUrl) {
+        const ext = track.mimeType ? track.mimeType.split('/')[1] : 'wav';
+        const path = `audios/${track.id}.${ext}`;
+        // Fetch will happen during zip generation, store placeholder path
+        t._sourceBlob = track.sourceUrl; // temp placeholder for fetch
+        t.source = path;
+        delete t.sourceUrl;
+      } else {
+        t.source = null;
+      }
+      return t;
+    }),
+  }));
+
+  // Async fetch of audio blobs and add to zip
+  for (const anim of serializedAnimations) {
+    for (const track of anim.audioTracks) {
+      if (track._sourceBlob) {
+        try {
+          const response = await fetch(track._sourceBlob);
+          const blob = await response.blob();
+          const ext = track.mimeType ? track.mimeType.split('/')[1] : 'wav';
+          audiosFolder.file(`${track.id}.${ext}`, blob);
+        } catch (err) {
+          console.error(`Failed to fetch audio ${track.id}:`, err);
+        }
+        delete track._sourceBlob;
+      }
     }
   }
 
@@ -46,7 +83,7 @@ export async function saveProject(project) {
     canvas: project.canvas,
     textures: serializedTextures,
     nodes: serializedNodes,
-    animations: project.animations,
+    animations: serializedAnimations,
     parameters: project.parameters ?? [],
     physics_groups: project.physics_groups ?? [],
   };
@@ -91,12 +128,32 @@ export async function loadProject(file) {
     }
   }
 
-  // Restore mesh typed data
+  // Restore mesh typed data and ensure blend shapes exist (forward-compat with old files)
   for (const node of project.nodes) {
     if (node.mesh) {
       node.mesh.uvs = new Float32Array(node.mesh.uvs);
       // edgeIndices stays as Array — partRenderer handles both Array and Set
 
+    }
+    // Default blend shapes fields for forward-compat with old files
+    if (node.blendShapes === undefined) node.blendShapes = [];
+    if (node.blendShapeValues === undefined) node.blendShapeValues = {};
+  }
+
+  // Restore audio tracks: load from zip → create blob URLs
+  for (const anim of project.animations ?? []) {
+    if (!anim.audioTracks) anim.audioTracks = [];
+    for (const track of anim.audioTracks) {
+      if (track.source) {
+        try {
+          const audioBlob = await zip.file(track.source).async('blob');
+          track.sourceUrl = URL.createObjectURL(audioBlob);
+          delete track.source;
+        } catch (err) {
+          console.error(`Failed to load audio ${track.id}:`, err);
+          track.sourceUrl = null;
+        }
+      }
     }
   }
 
