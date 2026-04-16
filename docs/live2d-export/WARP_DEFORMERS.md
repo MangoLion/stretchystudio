@@ -171,3 +171,123 @@ Hiyori uses ~8 significant digits for keyform positions.
 
 Topwear warp deformer at ROOT, 3×3 grid, canvas pixel positions, mesh keyforms
 in 0..1 with toFixed(6). Opens in Cubism Editor, texture correct, grid draggable.
+
+## Structural Warp Chain — Hiyori Deep Dive (Session 15)
+
+Hiyori uses THREE chained structural warps, NOT one combined 2D-parameter warp.
+Each warp has a SINGLE parameter with 2-3 keyforms.
+
+### Chain topology
+
+```
+ROOT (#3977)
+├─ Body Warp Z (#4050) — ParamBodyAngleZ, Canvas coords, 5×5
+│  └─ Body Warp Y (#4049) — ParamBodyAngleY, DeformerLocal, 5×5
+│     └─ Breath Warp (#3536) — ParamBreath, DeformerLocal, 5×5
+│        ├─ Skirt Warp, Butterfly Tie Warp, Collar Front/Back Warp
+│        ├─ Body X Warp (#3560) — ParamBodyAngleX (per-part, NOT structural)
+│        ├─ Neck Position (CRotationDeformerSource)
+│        ├─ Shoulder R / Shoulder L (CRotationDeformerSource)
+│        └─ ... (all face warps chain through Neck → Face Rotation)
+├─ Leg L Position (CRotationDeformerSource) — at ROOT, NOT under Body Warp
+├─ Leg R Position (CRotationDeformerSource) — at ROOT, NOT under Body Warp
+└─ Glue warps (structural, at ROOT)
+```
+
+**Critical observations:**
+1. ParamBodyAngleX is a per-part warp child of Breath, NOT on the structural chain
+2. Legs are at ROOT — they don't follow body rotation/breathing
+3. ALL per-part warps and rotation deformers target Breath (the innermost structural warp)
+4. The structural chain applies Z → Y → Breath transforms automatically to everything below
+
+### Deformers targeting each level
+
+| Target | Deformers |
+|--------|-----------|
+| ROOT | Body Warp Z, Leg L, Leg R, Glue×2 |
+| Body Warp Z | Body Warp Y (only) |
+| Body Warp Y | Breath Warp (only) |
+| Breath Warp | 8 deformers: Skirt, Tie, Body X, Collar×2, Neck, Shoulder L/R |
+
+### Body Warp Z — exact values (canvas 2976×4175)
+
+Parameter: ParamBodyAngleZ, keys: -10, 0, +10
+Grid: 5×5 (36 points), CoordType "Canvas"
+
+**REST grid (ParamBodyAngleZ=0):**
+```
+X: 394.98  832.19  1269.40  1706.60  2143.81  2581.02
+Y: -37.89  575.47  1188.82  1802.18  2415.53  3028.89
+```
+Uniform rectangular grid. X range: 395–2581 (73% of canvas width).
+Y range: -38–3029 (73% of canvas height). NOT full canvas.
+X margin: ~13.3% each side. Y starts slightly above canvas top.
+
+**Shift at ParamBodyAngleZ=-10 (lean left):**
+Bottom row: ΔX=0, ΔY=0 (pinned).
+Top-left corner: ΔX=-148, ΔY=+136 (leans left and down).
+Gradient: linear from bottom (fixed) to top (max shift).
+
+**Shift at ParamBodyAngleZ=+10 (lean right):**
+Bottom row: ΔX=0, ΔY=0 (pinned).
+Top-left corner: ΔX=+244, ΔY=-32 (leans right and slightly up).
+Top-right corner: ΔX=+80, ΔY=+188.
+NOT a mirror of -10 — this is 3D perspective rotation.
+
+### Body Warp Y — exact values (DeformerLocal 0..1)
+
+Parameter: ParamBodyAngleY, keys: -10, 0, +10
+Grid: 5×5 (36 points), CoordType "DeformerLocal", targets Body Warp Z
+
+**REST grid (ParamBodyAngleY=0):**
+```
+Values: 0.0652  0.2391  0.4130  0.5870  0.7609  0.9348
+```
+Uniform square grid. Spacing: ~0.174. Margin: ~6.5% each side.
+
+**Shift at ParamBodyAngleY=-10:**
+Edge points (row 0, col 0/5): pinned, no shift.
+Interior points shift Y downward (positive ΔY). Max shift ~0.01 at bottom-center.
+Bottom row shifts most: ΔY up to +0.003 at edges, +0.005 at center.
+
+**Shift at ParamBodyAngleY=+10:**
+Similar magnitude, opposite direction. Bottom row Y decreases.
+
+### Breath Warp — exact values (DeformerLocal 0..1)
+
+Parameter: ParamBreath, keys: 0, 1
+Grid: 5×5 (36 points), CoordType "DeformerLocal", targets Body Warp Y
+
+**REST grid (ParamBreath=0):**
+```
+Values: 0.0547  0.2328  0.4109  0.5891  0.7672  0.9453
+```
+Uniform square grid. Spacing: ~0.178. Margin: ~5.5% each side.
+
+**Shift at ParamBreath=1 (exhale):**
+- Row 0 (top): NO change — edge pinned
+- Row 1 (Y≈0.233): interior points shift Y by ~-0.001 (upward compression)
+- Row 2 (Y≈0.411): interior points shift Y by ~-0.002 (slightly more)
+- Row 3 (Y≈0.589): interior points shift Y by ~-0.0001 (negligible)
+- Row 4-5 (bottom): NO change
+- X shifts: ±0.001 (center columns move inward slightly)
+- **Effect is VERY subtle** — about 1-3 pixels on a 2976px canvas
+
+### Grid margin pattern
+
+Hiyori grids are NOT edge-to-edge. Each has padding:
+
+| Warp | Space | Values | Margin |
+|------|-------|--------|--------|
+| Body Warp Z | Canvas | 395–2581 | ~13% each side |
+| Body Warp Y | 0..1 | 0.065–0.935 | ~6.5% each side |
+| Breath | 0..1 | 0.055–0.945 | ~5.5% each side |
+
+### Implementation implications for Stretchy Studio
+
+1. **Replace single 2D Body Warp with 3-chain**: Body Z (Canvas) → Body Y (DeformerLocal) → Breath (DeformerLocal)
+2. **ParamBodyAngleX**: separate per-part warp targeting Breath, NOT on structural chain
+3. **Legs stay at ROOT**: exclude leg rotation deformers from re-parenting
+4. **All other deformers target Breath**: per-part warps and rotation deformers → Breath (innermost)
+5. **Grid margins**: don't use 0-to-canvasW or 0-to-1; add ~6-13% padding
+6. **Breath effect scale**: our 2% was ~80px, Hiyori uses ~1-3px. Scale down dramatically

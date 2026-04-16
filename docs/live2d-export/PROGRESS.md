@@ -148,13 +148,35 @@ Key bugs fixed: field name swap (vertex_counts/position_index_counts), keyform b
 - [x] ParamBodyAngleX working — lean effect on body parts confirmed
 - [x] **KEY LEARNING**: per-part body/breath bindings cause tearing (each part shifts independently)
 - [x] **KEY LEARNING**: Hiyori uses ONE structural Body Warp wrapping everything, not per-part bindings
-- [x] Structural Body Warp created (section 3d): 5×5 grid, full canvas, ParamBodyAngleX × ParamBreath
-- [x] Per-part warp grids converted to Body Warp 0..1 space, CoordType "DeformerLocal"
-- [x] Rotation deformer origin storage for re-parenting (rotDeformerOriginNodes)
-- [ ] **BUG**: per-part warp targetDeformerGuid patch not finding nested nodes — parts squished to top-left
-- [ ] **BUG**: arms not moving (hasBakedKeyforms skip + rotation deformer re-parenting needs work)
-- [ ] Fix re-parenting: collect target nodes in array instead of nested traversal
-- [ ] Verify entire character moves as one unit under Body Warp
+- [x] Structural Body Warp created but BROKEN (wrong architecture — single 2D grid instead of 3-chain)
+
+### Session 15: 3-Chain Architecture + Artistic Body Parameters (2026-04-16)
+- [x] **Deep Hiyori investigation**: 3 chained structural warps, NOT one 2D parameter grid
+- [x] **3-chain implemented**: Body Z (ParamBodyAngleZ, Canvas) → Body Y (ParamBodyAngleY, DeformerLocal) → Breath (ParamBreath, DeformerLocal)
+- [x] **Body X Warp as 4th structural layer**: Breath → Body X → all children. Body bowing effect matching Hiyori.
+- [x] **Bug 1 fixed**: array-based re-parenting replaces `_pendingBodyWarpPatch` flag
+- [x] **Bug 2 fixed**: rotation deformer origins converted via `canvasToBodyXX/Y` (4-chain inverse)
+- [x] **CoordType fix**: rotation deformers patched from "Canvas" to "DeformerLocal" when re-parented
+- [x] **Body Warp Z grid**: computed from actual mesh bounding box (not hardcoded canvas percentages)
+- [x] **Flattened hierarchy matching Hiyori**: no torso/eyes rotation deformers; neck/arms target Breath directly
+- [x] **Leg exclusion**: `LEG_ROLES` set keeps legs at ROOT; `FEET_FRAC=0.75` pins lower legs completely
+- [x] **Artistic Body Z**: spine-curve bowing from belly pivot, progressive (groin slight → head max), lower legs static
+- [x] **Artistic Body Y**: bell-curve compression/stretch, center columns shift most, asymmetric magnitude
+- [x] **Artistic Body X**: body bowing (center lean + edge counter-shift), Hiyori-matching pattern
+- [x] **Breath**: chest compression effect, ~10× Hiyori's values for visibility on smaller canvases
+- [x] **Confirmed in Cubism Editor 5.0**: all 4 body params produce visible, artistic effects
+- [x] WARP_DEFORMERS.md enriched with "Structural Warp Chain" section (exact Hiyori values)
+- [ ] Per-part warps still target Body X (not group rotation deformers) — face/head rotation not connected yet
+- [ ] Standard params (ParamAngleX/Y/Z, ParamEye*, ParamBrow*, ParamMouth*, ParamHair*) — created but not bound to anything
+
+**KEY FINDINGS (Session 15):**
+1. Hiyori has NO torso rotation deformer — body lean via Body X Warp
+2. Hiyori has NO eyes rotation deformer — eyes via warp/parallax
+3. ParamBodyAngleX is a per-part warp child of Breath, NOT on structural chain
+4. Face Rotation in Hiyori uses 2D ParamAngleX × ParamAngleY grid (9 keyforms)
+5. ParamAngleZ is NOT on any rotation deformer — it's on hair warps only
+6. Legs at ROOT, independent of body rotation
+7. Per-part warps targeting rotation deformers cause "tiny parts" bug (coordinate space mismatch) — deferred
 
 ## Phase 4: Future Work
 
