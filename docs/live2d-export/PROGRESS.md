@@ -1,6 +1,6 @@
 # Live2D Export — Progress Tracker
 
-## Current Status: Body Warp Hierarchy In Progress — Session 14 (2026-04-16)
+## Current Status: Face chain complete — parallax + AngleZ head tilt working (Session 20, 2026-04-17)
 
 ---
 
@@ -177,6 +177,141 @@ Key bugs fixed: field name swap (vertex_counts/position_index_counts), keyform b
 5. ParamAngleZ is NOT on any rotation deformer — it's on hair warps only
 6. Legs at ROOT, independent of body rotation
 7. Per-part warps targeting rotation deformers cause "tiny parts" bug (coordinate space mismatch) — deferred
+
+### Session 16: Per-Part Parameter Bindings (2026-04-17)
+
+Goal: bind standard face/head parameters (ParamHair*, ParamBrow*, ParamEyeBall*, ParamEyeOpen) to per-part warps.
+
+- [x] **Deep Hiyori investigation**: 5 parallel subagents mapped every face deformer
+- [x] Found Hiyori's actual patterns for iris, brows, mouth, hair, eye open/close
+- [x] Mapped complete face hierarchy (Face Rotation → 11+ child warps, each with AngleX×AngleY parallax)
+- [x] Documented architectural insight: nose/ears/contour only get face parallax, no own params
+- [x] **Hair swing** (ParamHairFront/HairBack): 1D tips-swing, quadratic Y curl — working
+- [x] **Brow position** (ParamBrowLY/RY): 1D uniform Y translate (15% of grid height) — working
+- [x] **Iris position** (ParamEyeBallX/Y): 2D uniform translate (9% X, 7.5% Y) — working
+- [x] **Eye open/close** (ParamEyeLOpen/ROpen): parabola-fit zipper curve from eyewhite bottom — working
+- [x] **Right eye symmetry**: all three parts (-r) use same curve infrastructure
+- [x] **Extended smart closure**: covers all 6 eye part meshes (L and R), plus generic `eyelash`/`eyewhite`/`irides`
+- [x] Generic 1D/2D binding framework in cmo3writer.js (N keyforms via keyCombos dispatch)
+- [x] meshCtx pre-pass: curve sampled from matching eyewhite (fallback: eyelash)
+- [x] Linear extrapolation for wing vertices beyond curve X range
+- [x] SESSION16_FINDINGS.md — 700+ lines documenting investigation + implementation
+- [ ] **Mouth open** (ParamMouthOpenY) — deferred to Session 17
+
+**KEY FINDINGS (Session 16):**
+1. **Eyewhite bottom = lower eyelid = closure line** (NOT eyelash's lower edge, which is UPPER eye opening)
+2. **Parabola fit** (least-squares, Cramer's rule) produces smooth anatomical curve from noisy bin data
+3. **Bin-max-Y** (not percentile) extracts true mesh boundary without interior triangulation noise
+4. **Normalize X to [-1, 1]** before parabola fit — avoids x⁴ overflow for canvas coords
+5. **Sample within fit-data X range only** — extrapolating parabola beyond data diverges quadratically
+6. **Linear extrapolation of curve** at wings (slope of first/last segment) — natural eye corner shape
+7. **factor = k** (linear) for all eye parts → all collapse to SAME line at closed. `factor = 0.05 + 0.95*k` caused parallel lines.
+8. **Full bbox (no percentile filter)** for face parts — percentile caused outlier vertex extrapolation peaks
+9. **Hiyori patterns**: iris 2D EyeBallY×X, brow 4-layer chain, mouth is mesh-vertex-only, hair 3-layer (parallax→AngleZ→swing)
+
+### Session 17: Mouth + Per-Vertex Eye Closure (2026-04-17)
+
+Goal: mouth open + optional mouth form + iris gaze fix. Expanded into architectural pivot for eye closure.
+
+- [x] **Mouth open** (ParamMouthOpenY) — warp-grid Y-stretch from top pivot, quadratic acceleration
+- [x] **Eye closure refactor**: switched from warp-grid keyforms to per-vertex CArtMeshForm
+- [x] **Static band algorithm**: eyelash bottom contour offset upward by 5% of mesh height = band upper Y
+- [x] **Eyelash closure**: above-band vertices clamp to bandY, at/below stay (keeps visible lash thickness)
+- [x] **Eyewhite/iris closure**: ALL vertices snap to bandY (fully hidden behind lash)
+- [x] **Upward shift**: closed state shifted up by 10% of mesh height for natural positioning
+- [x] **Both sides** (L and R): mirrored logic, each eyelash's own band extracted per side
+- [x] **RigWarp passthrough**: removed `eyelash-l/r`, `eyewhite-l/r`, `irides-l/r` from `TAG_PARAM_BINDINGS` — their warps are now identity pass-throughs; mesh deforms itself
+- [x] SESSION17_FINDINGS.md — architecture pivot, discarded approaches, tuning knobs
+- [ ] ParamMouthForm — deferred
+- [ ] Iris gaze during closure — deferred to Session 18 (restored there)
+
+### Session 18: Iris Gaze Restore (2026-04-17)
+
+Goal: re-enable ParamEyeBallX/Y on the iris after Session 17's mesh-level closure refactor stripped the old warp binding.
+
+- [x] Added `irides-l` / `irides-r` entries to `TAG_PARAM_BINDINGS` with 2D `ParamEyeBallX × ParamEyeBallY` bindings (9 keyforms per iris, 3×3 grid)
+- [x] Pure uniform translation: every grid point shifts by `(kX × gxSpan × 0.09, -kY × gySpan × 0.075)` — Hiyori-referenced magnitudes
+- [x] No nested warps needed: closure stays at the CArtMeshSource level (Session 17), gaze lives on the RigWarp above
+- [x] **Confirmed in Cubism Editor 5.0** — user reports "eyeballs move"
+- [ ] Face parallax (ParamAngleX/Y on every face part) — still deferred
+
+**KEY FINDING (Session 18):**
+- Closure and gaze are **independent transformations on separate layers** (mesh-level vertex keyforms vs warp-level grid keyforms). They can coexist in the same deformer chain without stacking warps or combining parameters into a single 3D keyform grid. When the iris is closed (mesh collapses behind the lash), the warp still translates — but the translation isn't visible because the iris is hidden. This clean separation is what made the Session 17 passthrough pattern worth breaking for this one feature.
+
+### Session 19: Face Parallax — research + ship (2026-04-17)
+
+Goal: add `ParamAngleX/Y` face parallax matching Hiyori's 3D-rotation illusion. Started as implementation of Option B (procedural 3D projection with per-part depth, 7 warps). Pivoted mid-session after user testing revealed per-warp approaches look "monolithic" regardless of rotation math. Shipped a **single-warp Body-X-pattern** version.
+
+**Research phase (first):**
+- [x] **Verified Hiyori's face parallax** directly from `reference/live2d-sample/Hiyori/cmo3_extracted/main.xml`
+- [x] **Corrected Session 18 errors**: magnitudes off ~30×; translation non-uniform; Hair Back nested in Hair Front, Ear L in Ear R; grid is 6×6 (col=5,row=5 means 5×5 Bezier patches); ParamAngleZ range ±10 not ±30
+- [x] Documented chain, grid structure, depth ordering (Hair Back deepest → Ears shallowest)
+- [x] Four options evaluated (A=copy data, B=procedural 3D, C=uniform translation, D=phased)
+- [x] SESSION19_FINDINGS.md Part I written (research, options, decision)
+- [x] SESSION19_PROMPT.md marked SUPERSEDED
+
+**Implementation phase (pivoted):**
+- [x] Option B attempted — 7 FaceParallax warps, per-part 3D rotation around face pivot. Face parts displaced to chest when routed through Face Rotation deformer → FaceParallax retargeted to Body X directly (Face Rotation emitted but unused; bypass preserved for future fix).
+- [x] Option B (bypassed Face Rotation) worked structurally but user feedback: movement looked "monolithic", "pieces moving independently", "no deformation parallax happening".
+- [x] Attempted shared-pivot 3D rotation across warps — still felt discrete because Cubism treats each warp as an independent field (can't interpolate between warps).
+- [x] **Pivot: collapsed 7 warps into ONE FaceParallax warp** covering the union face bbox. All face rig warps re-parent to it. Matches user's "Blender proportional-edit with smooth falloff" mental model.
+- [x] **Adopted Session 15 Body-X pattern** for the single warp's keyform deformation: parametric `1.5·sin(π·cf) - 0.5` bow, uniform across the grid. User confirmed: "It works fine."
+- [x] **Artistic enhancement pass**: layered four effects (Body Z/Y pattern) — base bow + asymmetric perspective + cross-axis Y-on-AngleX (tilt while turning) + row/column fade. User confirmed: "It's okay for now."
+- [x] SESSION19_FINDINGS.md Part II written — implementation journey, key lessons, deferrals
+- [x] **Confirmed in Cubism Editor**: single-warp face parallax on AngleX/Y producing a coherent 3D rotation illusion on the user's test character
+- [x] **Face Rotation shipped in Session 20** — coord-space resolved; chain is Body X → Face Rotation → FaceParallax → face rig warps. ParamAngleZ tilts head around chin pivot. User-confirmed in Cubism Editor.
+- [ ] **Deferred: per-part depth parallax** — collapsed into single-warp. If hair-back-moves-more-than-ears effect is wanted, add spatial depth mapping (vary deformation magnitude by grid region) in a future session.
+- [ ] **Deferred: nesting** (Hair Back in Hair Front, Ear L in Ear R, as Hiyori has) — not needed for current character roster.
+
+**KEY FINDINGS (Session 19):**
+1. **Cubism warps don't interpolate between each other.** For coherent deformation across a region, use ONE warp. This is structural — no amount of shared rotation math across multiple warps will look continuous. The user's "pieces moving independently" feedback pointed directly at this.
+2. **Reference-first means "copy what already works in your own code too."** Session 15 Body X was the nearest precedent. When the user pushed back on invented approaches, copying Body X's pattern (sine bow + non-uniform deformation) directly shipped.
+3. **Richer formula on single warp > simple formula on many warps.** The shipped deformation (base bow + asymmetric perspective + cross-axis shift + row/col fade) runs on ONE warp and beats anything the 7-warp Option B produced.
+4. **Per-part depth is a refinement, not a prerequisite.** A coherent single-warp deformation without per-part depth feels better than depth-varied independent pieces. Spatial depth mapping inside the single warp can add per-region parallax later.
+5. **User feedback loop was load-bearing.** Every iteration was driven by concrete visual feedback — implement → export → open Cubism → iterate. Without that loop, I'd have shipped the technically-correct-but-visually-wrong multi-warp approach.
+6. **Agent research is unreliable for load-bearing numbers.** Session 18's prompt baked in an agent's research table; five numbers were wrong. Re-verification by direct XML inspection is required for anything that drives code.
+
+**KEY FINDINGS (Session 17):**
+1. **Warp-grid coarseness limit**: 3×3 grid can't preserve a fine per-vertex contour; fundamental, not a bug. Per-vertex `CArtMeshForm` is the correct tool for detailed facial features (Hiyori's choice).
+2. **RigWarp as passthrough**: deleting a tag's entry from `TAG_PARAM_BINDINGS` while keeping it in `RIG_WARP_TAGS` produces a no-op warp with single rest keyform. Structural routing (Body chain) still flows through it.
+3. **Dual per-vertex rules**: eyelash needs a thickness (clamp above-band, keep below) to be visible; eyewhite/iris need to fully hide (snap all to band line).
+4. **Canvas-space band computation**: work in canvas pixels until the final conversion. Mesh vertices arrive in canvas space; the existing rwBox/dfOrigin conversion path handles canvas→warp-local. No body-X detour needed.
+5. **Side-agnostic closure detection**: one set of tags (`EYE_CLOSURE_TAGS`), a `closureSide` derived from `-l`/`-r` suffix, and `closureParamPid` picked by side — cleaner than duplicating L/R branches.
+6. **Upward shift separately from band thickness**: conflating them thickened the lash whenever we moved it up. Two knobs (`EYELASH_BAND_FRAC`, `EYELASH_CLOSED_SHIFT_FRAC`) tune independently.
+
+**DEFERRED (to future sessions):**
+- ParamMouthForm (smile/frown — would need 2D binding or CArtMeshForm)
+- ParamBrowAngle/Form (complex tilt + shape morph)
+- ParamEyeSmile (interaction with EyeOpen)
+- ParamHairSide (Hiyori uses bone chains — skip)
+- ParamAngleX/Y face parallax — **shipped Session 19** (single-warp Body-X pattern with artistic layers)
+- ParamAngleZ head tilt — **shipped Session 20** (Face Rotation chained; rotation-deformer local-frame coord-space reverse-engineered)
+- Per-part depth parallax inside the single face warp (spatial depth mapping) — possible refinement
+- Teeth/tongue (oral mesh) — requires user to split mouth into sub-meshes
+
+### Session 20: ParamAngleZ head tilt — coord-space fix + Neck Warp (2026-04-17)
+
+- [x] Diagnosed Session 19's "face displaced to chest" failure mode by enumerating all 50+ Hiyori rotation deformers and classifying by parent type
+- [x] Discovered the rotation-deformer local-frame rule: a rotation deformer exposes a coord frame of **canvas-pixel offsets centered on its own pivot** to its children, regardless of the `DeformerLocal` CoordType label
+- [x] Fixed FaceParallax grid emission — now canvas-pixel offsets from `facePivotCx/Cy` (not nested Body-X 0..1)
+- [x] Re-enabled chain: FaceParallax → Face Rotation → Body X
+- [x] User-confirmed in Cubism Editor: ParamAngleZ tilts head around chin pivot; AngleX/Y continue to work; user reported Body Angle X/Y/Z also reads cleaner now (face chain composes correctly with body motion)
+- [x] WARP_DEFORMERS.md: new section "Rotation Deformer Local Frame" documenting the rule with Hiyori evidence
+- [x] SESSION20_FINDINGS.md: full diagnosis, evidence table, fix, methodology note
+- [x] **Neck Warp** (follow-up on user ask: *"Would it make sense at least the upper neck region to move with the head/face?"*) — new section 3d.1 in cmo3writer.js. Dedicated `NeckWarp` CWarpDeformerSource targets Body X, bound to `ParamAngleZ`, 3 keyforms. Y-gradient deformation: top row shifts 8% of neck width at ±30°, bottom row pinned at shoulders (matches Hiyori's Neck Warp pattern, albeit Hiyori binds hers to `PARAM_BODY_ANGLE_X`). Tuning knob: `NECK_TILT_FRAC`.
+
+**KEY FINDING (Session 20):**
+`CoordType = DeformerLocal` is not a unit — it means "parent's local frame". The local frame depends on the parent's type:
+
+| Parent | Local frame |
+|---|---|
+| ROOT | Canvas pixels |
+| Warp | Warp's own 0..1 input domain |
+| Rotation deformer | Canvas-pixel offsets from the rotation deformer's own pivot |
+
+Passing Body-X-nested-0..1 values (~0.5) through a rotation deformer collapses them to sub-pixel offsets, rendering the affected region at canvas ≈ (pivot) with ~1-pixel footprint. That was Session 19's "displaced to chest, scaled down" symptom.
+
+**Methodology lesson**: user direction *"stop theorizing, verify"* pivoted the session from speculation to a 1-minute Python enumeration of Hiyori's rotation deformers. The pattern was immediate and unambiguous. Evidence gathering beat ten rounds of guessing.
 
 ## Phase 4: Future Work
 

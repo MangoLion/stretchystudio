@@ -359,7 +359,7 @@ of body part positions. Generates a fixed hierarchy regardless of model.
 
 ## What SS Already Exports
 
-Current `cmo3writer.js` capabilities:
+Current `cmo3writer.js` capabilities (updated after Session 16, 2026-04-17):
 
 | Feature | Status |
 |---------|--------|
@@ -371,15 +371,27 @@ Current `cmo3writer.js` capabilities:
 | Baked bone-weight keyforms (elbow bending) | ✅ Done |
 | Draw order | ✅ Done |
 | Animation export (.can3) | ✅ Done |
-| **Warp deformers** | ❌ Not implemented |
-| **Standard parameter IDs** (ParamAngleX etc.) | ❌ Only custom IDs |
+| **Warp deformers** | ✅ Done (Session 13) — all 37 tags get per-part warps |
+| **Standard parameter IDs** (ParamAngleX etc.) | ✅ Done (Session 12) — 18 standard params created |
 | **Standard parameter groups** | ❌ Not implemented |
-| **Physics groups** | ❌ Not implemented |
-| **3D parallax keyforms** | ❌ Not implemented |
-| **Face deformer hierarchy** | ❌ Not implemented |
-| **Body deformer hierarchy** (warp-based) | ❌ Not implemented |
-| **Mouth/eye open-close** | ❌ Not implemented |
-| **Breathing animation** | ❌ Not implemented |
+| **Physics groups** (.physics3.json) | ❌ Not implemented |
+| **Body deformer hierarchy** (warp-based 4-chain) | ✅ Done (Session 15) — Body Z → Y → Breath → Body X |
+| **Body params** (AngleX/Y/Z, Breath) | ✅ Done (Session 15) — procedural artistic keyforms |
+| **Hair sway** (ParamHairFront/Back) | ✅ Done (Session 16) — 1D tips-swing |
+| **Brow position** (ParamBrowLY/RY) | ✅ Done (Session 16) — 1D uniform Y translate |
+| **Iris gaze** (ParamEyeBallX/Y) | ✅ Done (Session 18) — 2D warp translation (9% X, 7.5% Y), coexists with mesh-level closure |
+| **Eye open/close** (ParamEyeLOpen/ROpen) | ✅ Done (Session 17) — per-vertex CArtMeshForm + static band, works both sides |
+| **Mouth open/close** (ParamMouthOpenY) | ✅ Done (Session 17) — warp-grid Y-stretch from top pivot |
+| **Mouth form** (ParamMouthForm) | ⏭ Deferred |
+| **Face deformer hierarchy** (AngleX/Y parallax) | ✅ Session 19 — single FaceParallax warp under Body X, Body-X-pattern deformation |
+| **3D parallax keyforms** (AngleX×AngleY on the face warp) | ✅ Session 19 — 6×6 grid, 9 keyforms, layered deformation (bow + perspective + cross-axis + fade) |
+| **ParamAngleZ** (head tilt rotation) | ✅ Session 20 — Face Rotation chained between Body X and FaceParallax; rotation-deformer local-frame coord-space reverse-engineered (canvas-pixel offsets from pivot) |
+| **Neck Warp** (neck follows head tilt) | ✅ Session 20 — dedicated NeckWarp bound to ParamAngleZ, Y-gradient (top row shifts 8% of neck width, bottom row pinned at shoulders). Mirrors Hiyori's Neck Warp pattern. |
+| **ParamBrowAngle/Form**, **ParamEyeSmile** | ❌ Deferred |
+| **ParamHairSide** | ❌ Not applicable (Hiyori uses bone chains) |
+
+For implementation details see SESSION15_PROMPT.md (body), SESSION16_FINDINGS.md (face bindings),
+SESSION17_FINDINGS.md (mouth + eye closure pivot), PROGRESS.md (milestone tracker).
 
 ## Gap Analysis
 
@@ -606,16 +618,18 @@ For professional-grade models, it's a starting point that needs manual polish.
 
 **Estimated complexity:** Medium
 
-### Phase 5C: 3D Head Parallax
+### Phase 5C: 3D Head Parallax — ✅ shipped Session 19
 
-**Scope:** ParamAngleX/Y/Z with per-part parallax
+**Shipped approach:** single `FaceParallax` warp under Body X, parametric layered deformation following the Session 15 Body X/Z pattern. Not the per-part 3D projection originally planned. See [SESSION19_FINDINGS.md Part II](sessions/SESSION19_FINDINGS.md) for the journey and pivots.
 
-1. Add depth annotation to SS groups (UI field or naming convention)
-2. Generate per-face-part warp deformers
-3. Compute parallax keyforms from depth values
-4. "Auto Generate 4 Corners" equivalent for diagonal keyforms
+1. One `FaceParallax` `CWarpDeformerSource` (6×6 grid, 9 keyforms on `ParamAngleX × ParamAngleY`), targeting Body X
+2. All face-tagged meshes (`face`, `nose`, `eyebrow-l/r`, `eyewhite/irides/eyelash-l/r`, `mouth`, `ears-l/r`, `front hair`, `back hair`) re-parent their rig warps to this one warp
+3. Keyform deformation: base sine bow + asymmetric perspective + cross-axis Y-on-AngleX shift + row/col fade. Same formula family as Session 15 Body X Warp, adapted for 2D (AngleX × AngleY).
+4. Face Rotation deformer (ParamAngleZ) **emitted but not in chain** — deferred, coord-space quirk with rotation-deformer-as-warp-parent unresolved this session
 
-**Estimated complexity:** Hard
+**Key structural insight:** Cubism warps don't interpolate between each other. A single warp covering the whole face gives the coherent deformation Hiyori has; multiple per-part warps with shared rotation math still look discrete. See SESSION19_FINDINGS.md Part II for full reasoning.
+
+**Tuning knobs:** `FP_BOW_X_FRAC`, `FP_PERSP_X_FRAC`, `FP_CROSS_Y_FRAC` (and Y mirrors) in `cmo3writer.js` section 3d.2. All default to small fractions of face warp span.
 
 ### Phase 5D: Physics Groups
 

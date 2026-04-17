@@ -156,10 +156,53 @@ By contrast, child warps (e.g. "Collar Front Warp" under intermediate deformer):
 | Warp parent | Grid positions | CoordType | Mesh keyform positions |
 |-------------|---------------|-----------|----------------------|
 | ROOT        | Canvas pixels | "Canvas"  | 0..1 warp-local      |
-| Deformer    | Parent's 0..1 | "DeformerLocal" | 0..1 warp-local |
+| Warp        | Parent's 0..1 input domain | "DeformerLocal" | 0..1 warp-local |
+| Rotation deformer | **Canvas-pixel offsets from parent's pivot** | "DeformerLocal" | 0..1 warp-local |
 
 Mesh keyform positions are ALWAYS 0..1 warp-local, regardless of the warp's parent.
 Mesh keyform CoordType is ALWAYS "DeformerLocal".
+
+### Rotation Deformer Local Frame — Session 20 finding
+
+`DeformerLocal` is a CoordType *label*, not a unit.  It means *"in my parent's local
+frame"*, and the parent's local frame depends on the parent's type:
+
+- **Warp parent** → local frame is the warp's 0..1 input domain (so values ≈ 0..1).
+- **Rotation-deformer parent** → local frame is **canvas-pixel offsets from the
+  parent's own pivot**.  The rotation deformer's pivot is the origin of its
+  output coord frame, and units are canvas pixels — not 0..1.
+
+Evidence — Hiyori rotation-deformer pivots grouped by parent:
+
+| Parent type | Deformer | Pivot (example) | Scale |
+|---|---|---|---|
+| ROOT | Leg L Position | (1659.99, 2199.51) | canvas pixels absolute |
+| Warp (Breath) | Neck Position | (0.48671, 0.31439) | 0..1 of Breath's input |
+| Warp (Breath) | Shoulder R / L | (0.35648, 0.37443) / (0.63737, 0.37291) | 0..1 of Breath's input |
+| Rotation deformer (Neck Position) | Face Rotation | (1.17, -64.12) | canvas px offset from Neck's pivot — "1 px right, 64 px above Neck" |
+| Rotation deformer (Face Rotation) | Hair Side Up R Rotation 0 | (-233.74, -528.07) | canvas px offset from Face Rotation's pivot |
+
+The same rule applies to **warp children of rotation deformers**: grid positions
+are in canvas-pixel offsets from the parent rotation deformer's pivot.  Hiyori's
+FaceParallax warps (children of Face Rotation) have grid values like
+`(-60..292, -435..-45)` — pixel offsets covering the face region relative to
+Face Rotation's pivot.
+
+### Consequence for SS export (Session 20)
+
+When emitting a warp under a rotation deformer (e.g. FaceParallax under Face
+Rotation), grid values MUST be canvas-pixel offsets from the rotation deformer's
+canvas pivot:
+
+```javascript
+fpRestLocal[i*2]     = canvas_x - facePivotCx;
+fpRestLocal[i*2 + 1] = canvas_y - facePivotCy;
+```
+
+**Not** the nested 0..1 scale the rest of the Body X chain uses.  Session 19
+attempts that passed Body-X-0..1 values (~0.5) through Face Rotation collapsed
+the face to canvas ~(0, 0) (chest area) because Cubism interpreted the 0..1
+values as sub-pixel offsets.
 
 ### Precision trap
 
@@ -291,3 +334,108 @@ Hiyori grids are NOT edge-to-edge. Each has padding:
 4. **All other deformers target Breath**: per-part warps and rotation deformers → Breath (innermost)
 5. **Grid margins**: don't use 0-to-canvasW or 0-to-1; add ~6-13% padding
 6. **Breath effect scale**: our 2% was ~80px, Hiyori uses ~1-3px. Scale down dramatically
+
+---
+
+## Per-Part Parameter Bindings — Session 16
+
+Implementation details and reverse-engineered Hiyori patterns for standard
+facial/head parameters. See SESSION16_FINDINGS.md for the full investigation
+and design log.
+
+### Generic Binding Framework (cmo3writer.js section 3c)
+
+Per-part warp deformers are created for every tagged mesh. Bindings are declared
+in `TAG_PARAM_BINDINGS` Map:
+
+```javascript
+const TAG_PARAM_BINDINGS = new Map([
+  [tag, {
+    bindings: [{ pid, keys, desc }, ...],   // 1 or 2 entries (1D or 2D)
+    shiftFn: (grid, gW, gH, keyVals[], gxSpan, gySpan, meshCtx) => Float64Array,
+  }],
+]);
+```
+
+The dispatcher generates N keyforms, calling `shiftFn` with each key combination.
+For 2D bindings, binding[0] is the inner/fast axis (matches Hiyori's keyform ordering).
+
+### Bound Parameters (Session 16)
+
+| Parameter | Tags | Approach | Formula Summary |
+|-----------|------|----------|----------------|
+| ParamHairFront | `front hair` | 1D tips-swing | `dx = k * 0.10 * gxS * rowFrac` |
+| ParamHairBack | `back hair` | 1D tips-swing | `dx = k * 0.08 * gxS * rowFrac` |
+| ParamBrowLY | `eyebrow`, `eyebrow-l` | 1D Y translate | `dy = -k * 0.15 * gyS` |
+| ParamBrowRY | `eyebrow-r` | 1D Y translate | Same, R side |
+| ParamEyeBallX×Y | `irides`, `-l`, `-r` | 2D uniform translate | `dx = kX * 0.09 * gxS`, `dy = -kY * 0.075 * gyS` |
+| ParamEyeLOpen | `eyelash-l`, `eyewhite-l`, `irides-l`, + generics | Parabola curve | See "Eye Closure" below |
+| ParamEyeROpen | `eyelash-r`, `eyewhite-r`, `irides-r` | Parabola curve | Same as L, R side |
+
+All use `factor = k` (linear) so meshes collapse exactly at k=0/k=1 extremes.
+
+### Eye Closure: Parabola-Fit Zipper Line
+
+**Anatomical insight**: Closed eye line ≈ lower eyelid = eyewhite mesh's bottom
+edge. NOT eyelash's lower edge (which is upper eye opening).
+
+**Pre-pass algorithm** (runs before per-part warp loop):
+1. For each eyewhite mesh (preferred) or eyelash mesh (fallback):
+   - Sort vertices by X
+   - Divide into 6–8 X-bins (scales with vertex count)
+   - Per bin: take MAX Y vertex (actual bottom boundary)
+   - Fit parabola `y = ax² + bx + c` via least-squares
+   - Normalize X to `[-1, 1]` before fitting (avoids x⁴ overflow)
+   - Solve 3×3 linear system via Cramer's rule
+2. Sample parabola at 7 X positions within fit-data X range ONLY
+   (extrapolation diverges quadratically)
+3. Apply `yOffset = -0.15 * meshHeight` (raise from absolute bottom to closure line)
+4. Convert to Body X space, store in `eyeContexts` array
+
+**Lookup at binding time** (`findEyeCtx(tag, bboxCx, bboxCy)`):
+1. Eyewhite with matching side (-l/-r) → preferred
+2. Any eyewhite → fallback
+3. Eyelash with matching side → fallback
+4. Any context, nearest by bbox proximity → last resort
+
+All three eye parts (eyelash, eyewhite, iris) for the same side use the SAME
+curve → collapse to a single line at closed state.
+
+**shiftFn logic** (identical across all eye parts):
+```javascript
+const lerpCurveY = (px) => {
+  // Linear extrapolation beyond endpoints (slope of first/last segment)
+  if (px <= lx0) return ly0 + slopeL * (px - lx0);
+  if (px >= rxN) return ryN + slopeR * (px - rxN);
+  // Linear interp within curve
+};
+for each vertex:
+  const cY = lerpCurveY(grid[i]);
+  pos[i + 1] = cY + (grid[i + 1] - cY) * factor;  // factor = k
+```
+
+**Why linear extrapolation for wings**: eyelash wings extend beyond eyewhite's
+X range. Clamping to endpoint Y creates flat horizontal extension (ugly).
+Collapsing to corner point narrows the eye (ugly). Linear extrapolation with
+slope at endpoints follows the parabola's natural trajectory → wings curl up
+toward eye corner naturally.
+
+### Eyewhite vs Eyelash Curvature
+
+For a typical eye shape:
+- **Eyewhite lower half** (Y > median) → bin-max-Y gives: max Y at middle, smaller Y at corners → parabola with `a < 0` → **smile shape directly** (middle dips down)
+- **Eyelash lower half** → opposite curvature → parabola with `a > 0` → **frown shape**
+
+For eyewhite source: use parabola directly.
+For eyelash fallback: flip around line-through-endpoints (`y_new = 2*yLine - y`) to preserve tilt while inverting curvature.
+
+### Why NOT Percentile Bbox for Face Parts
+
+Earlier attempt: 10-90 percentile X for warp bbox (tighter editor display, avoids outlier vertices from PSD transparent-pixel triangulation).
+
+**Problem**: Mesh vertices outside the percentile bbox end up with `<0` or `>1`
+warp-local coords → bilinear extrapolation goes wild at collapsed keyforms →
+"peaks sticking out" visual glitch.
+
+**Final**: Use FULL vertex extent for warp bbox. Slightly larger editor display
+(cosmetic) but clean compression with no extrapolation artifacts.

@@ -1,5 +1,10 @@
 # Session 16 Prompt — Animate Remaining Standard Parameters
 
+> **STATUS: COMPLETED (2026-04-17).** This was the initial planning prompt for Session 16.
+> Actual results (different in several ways from this plan) are documented in
+> [SESSION16_FINDINGS.md](SESSION16_FINDINGS.md) Part II. Mouth was deferred to Session 17.
+> See [SESSION17_PROMPT.md](SESSION17_PROMPT.md) for the next session plan.
+
 ## Context
 
 Read documentation in `docs/live2d-export/`:
