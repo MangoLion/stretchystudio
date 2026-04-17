@@ -12,6 +12,7 @@ import { useEditorStore } from '@/store/editorStore';
 import { useProjectStore } from '@/store/projectStore';
 import { useAnimationStore } from '@/store/animationStore';
 import { computePoseOverrides } from '@/renderer/animationEngine';
+import { beginBatch, endBatch } from '@/store/undoHistory';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -54,8 +55,15 @@ function Row({ label, children }) {
 
 
 function SliderRow({ label, value, min, max, step = 1, onChange, help }) {
+  const onPointerDown = () => {
+    beginBatch(useProjectStore.getState().project);
+  };
+  const onPointerUp = () => {
+    endBatch();
+  };
+
   return (
-    <div className="space-y-1 py-0.5">
+    <div className="space-y-1 py-0.5" onPointerDown={onPointerDown} onPointerUp={onPointerUp}>
       <div className="flex justify-between items-center gap-1">
         <div className="flex items-center gap-1">
           <Label className="text-xs text-muted-foreground">{label}</Label>
@@ -518,6 +526,69 @@ function MeshPanel({ node, onRemesh, onDeleteMesh }) {
   );
 }
 
+/* ── Puppet Warp Panel ────────────────────────────────────────────────────── */
+
+function PuppetWarpPanel({ node }) {
+  const setPuppetWarpEnabled = useProjectStore(s => s.setPuppetWarpEnabled);
+  const puppetPinEditMode = useEditorStore(s => s.puppetPinEditMode);
+  const puppetPinPartId = useEditorStore(s => s.puppetPinPartId);
+  const enterPuppetPinEditMode = useEditorStore(s => s.enterPuppetPinEditMode);
+  const exitPuppetPinEditMode = useEditorStore(s => s.exitPuppetPinEditMode);
+
+  if (!node || node.type !== 'part' || !node.mesh) return null;
+
+  const isEnabled = node.puppetWarp?.enabled ?? false;
+  const pins = node.puppetWarp?.pins ?? [];
+  const isEditing = puppetPinEditMode && puppetPinPartId === node.id;
+
+  const handleToggle = (on) => {
+    setPuppetWarpEnabled(node.id, on);
+    if (!on && isEditing) exitPuppetPinEditMode();
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <SectionTitle>Puppet Warp</SectionTitle>
+        <Switch
+          checked={isEnabled}
+          onCheckedChange={handleToggle}
+          className="scale-75 origin-right"
+        />
+      </div>
+
+      {isEnabled && (
+        <>
+          <Row label="Pins">
+            <span className="text-xs tabular-nums">{pins.length}</span>
+          </Row>
+
+          {isEditing ? (
+            <div className="space-y-1.5">
+              <div className="rounded bg-primary/10 border border-primary/30 px-2 py-1.5 text-xs text-primary">
+                Click canvas to place pins. Right-click a pin to remove it.
+              </div>
+              <Button
+                size="sm" variant="outline" className="w-full h-7 text-xs"
+                onClick={exitPuppetPinEditMode}
+              >
+                Done Placing Pins
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm" variant="outline" className="w-full h-7 text-xs"
+              onClick={() => enterPuppetPinEditMode(node.id)}
+            >
+              Edit Pins
+            </Button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ── Shape Keys Panel ─────────────────────────────────────────────────────── */
 
 function ShapeKeysPanel({ node }) {
@@ -750,6 +821,8 @@ export function Inspector({ onRemesh, onDeleteMesh }) {
               <MeshPanel node={effectiveNode} onRemesh={onRemesh} onDeleteMesh={onDeleteMesh} />
               {effectiveNode.mesh && (
                 <>
+                  <Separator />
+                  <PuppetWarpPanel node={effectiveNode} />
                   <Separator />
                   <ShapeKeysPanel node={effectiveNode} />
                 </>

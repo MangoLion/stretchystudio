@@ -162,10 +162,13 @@ export async function exportLive2DProject(project, images, opts = {}) {
   const canvasW = project.canvas?.width ?? 800;
   const canvasH = project.canvas?.height ?? 600;
 
-  // Collect visible parts with meshes
-  const meshParts = project.nodes.filter(n =>
-    n.type === 'part' && n.mesh && n.visible !== false
-  );
+  // Collect visible parts with meshes.
+  // Sort by draw_order (descending) to maintain correct depth ordering (upstream fix).
+  const meshParts = project.nodes
+    .filter(n =>
+      n.type === 'part' && n.mesh && n.visible !== false
+    )
+    .sort((a, b) => (b.draw_order ?? 0) - (a.draw_order ?? 0));
 
   onProgress(`Preparing ${meshParts.length} meshes...`);
 

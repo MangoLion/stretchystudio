@@ -72,6 +72,8 @@ export class ScenePass {
     this.bgRenderer   = new BackgroundRenderer(gl);
     this.partRenderer = new PartRenderer(gl, this.meshProgram, this.wireProgram);
 
+    this.uIsPointLoc = gl.getUniformLocation(this.wireProgram, 'u_is_point');
+
     this.gl.enable(gl.BLEND);
     this.gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   }
@@ -216,19 +218,22 @@ export class ScenePass {
         const worldMatrix = worldMatrices.get(part.id);
         const partMvp     = worldMatrix ? mat3Mul(camera, worldMatrix) : camera;
 
-        // Edge outline
+        gl.uniform1i(this.uIsPointLoc, 0); // not a point
+
+        // Edge outline — semi-transparent dark gray
         if (overlays.showEdgeOutline || isSelected) {
-          gl.uniform4f(uColor, 0.2, 0.9, 0.1, isSelected ? 0.9 : 0.5);
+          gl.uniform4f(uColor, 0.0, 0.0, 0.0, isSelected ? 0.7 : 0.35);
           this.partRenderer.drawEdgeOutline(part.id, partMvp, uMvpW);
         }
 
-        // Wireframe triangles
+        // Wireframe triangles — 25% opaque dark gray
         if (overlays.showWireframe || isSelected) {
-          gl.uniform4f(uColor, 0.5, 0.8, 1.0, isSelected ? 0.3 : 0.15);
+          gl.uniform4f(uColor, 0.0, 0.0, 0.0, 0.25);
           this.partRenderer.drawWireframe(part.id, partMvp, uMvpW, uColor);
         }
 
-        // Vertices
+        // Vertices — white circles with black outline (shader handles styling)
+        gl.uniform1i(this.uIsPointLoc, 1);
         if (overlays.showVertices || isSelected) {
           this.partRenderer.drawVertices(part.id, partMvp, uMvpW, uColor);
         }

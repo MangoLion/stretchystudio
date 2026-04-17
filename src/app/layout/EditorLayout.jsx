@@ -70,6 +70,7 @@ export default function EditorLayout() {
   const mode = useEditorStore(s => s.editorMode);
   const setEditorMode = useEditorStore(s => s.setEditorMode);
   const isAnimationMode = mode === 'animation';
+  const wizardStep = useEditorStore(s => s.wizardStep);
   const project = useProjectStore(s => s.project);
   const captureRestPose = useAnimationStore(s => s.captureRestPose);
 
@@ -388,50 +389,52 @@ export default function EditorLayout() {
         </div>
 
         {/* Center Toggle */}
-        <TooltipProvider delayDuration={400}>
-          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center bg-muted/30 rounded-lg p-0.5 border border-border/40">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => setEditorMode('staging')}
-                  className={cn(
-                    'px-3 py-1 rounded-md text-[13px] font-semibold transition-all flex items-center gap-1.5',
-                    !isAnimationMode
-                      ? 'bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/20'
-                      : 'text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  Staging
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                In Staging mode, you set the base layout, mesh structure, and joint positions.
-              </TooltipContent>
-            </Tooltip>
+        {!wizardStep && (
+          <TooltipProvider delayDuration={400}>
+            <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center bg-muted/30 rounded-lg p-0.5 border border-border/40">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => setEditorMode('staging')}
+                    className={cn(
+                      'px-3 py-1 rounded-md text-[13px] font-semibold transition-all flex items-center gap-1.5',
+                      !isAnimationMode
+                        ? 'bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/20'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    Staging
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  In Staging mode, you set the base layout, mesh structure, and joint positions.
+                </TooltipContent>
+              </Tooltip>
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => {
-                    setEditorMode('animation');
-                    captureRestPose(project.nodes);
-                  }}
-                  className={cn(
-                    'px-3 py-1 rounded-md text-[13px] font-semibold transition-all flex items-center gap-1.5 ml-0.5',
-                    isAnimationMode
-                      ? 'bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/20'
-                      : 'text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  Animation
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                In Animation mode, you create keyframes on the timeline.
-              </TooltipContent>
-            </Tooltip>
-          </div>
-        </TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => {
+                      setEditorMode('animation');
+                      captureRestPose(project.nodes);
+                    }}
+                    className={cn(
+                      'px-3 py-1 rounded-md text-[13px] font-semibold transition-all flex items-center gap-1.5 ml-0.5',
+                      isAnimationMode
+                        ? 'bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/20'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    Animation
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  In Animation mode, you create keyframes on the timeline.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          </TooltipProvider>
+        )}
 
         <div className="flex-1" />
         <span className="text-xs text-muted-foreground hidden sm:block">Scroll to zoom · Alt+drag to pan</span>
@@ -441,20 +444,24 @@ export default function EditorLayout() {
       <div className="flex-1 overflow-hidden">
         <ResizablePanelGroup direction="horizontal">
           {/* Layers */}
-          <ResizablePanel defaultSize={18} minSize={12} maxSize={28}>
-            <div className="flex h-full flex-col border-r">
-              <div className="px-3 py-2 border-b shrink-0">
-                <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Layers</h2>
-              </div>
-              <div className="flex-1 overflow-hidden">
-                <LayerPanel />
-              </div>
-            </div>
-          </ResizablePanel>
-          <ResizableHandle />
+          {nodes.length > 0 && (
+            <>
+              <ResizablePanel defaultSize={18} minSize={12} maxSize={28}>
+                <div className="flex h-full flex-col border-r">
+                  <div className="px-3 py-2 border-b shrink-0">
+                    <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Layers</h2>
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <LayerPanel />
+                  </div>
+                </div>
+              </ResizablePanel>
+              <ResizableHandle />
+            </>
+          )}
 
           {/* Center: Canvas + Timeline */}
-          <ResizablePanel defaultSize={62}>
+          <ResizablePanel defaultSize={nodes.length > 0 ? 62 : 100}>
             <ResizablePanelGroup direction="vertical">
               <ResizablePanel defaultSize={isAnimationMode ? 85 : 100}>
                 <CanvasViewport
@@ -479,35 +486,44 @@ export default function EditorLayout() {
               )}
             </ResizablePanelGroup>
           </ResizablePanel>
-          <ResizableHandle />
 
           {/* Sidebar: Inspector + Animations */}
-          <ResizablePanel defaultSize={20} minSize={14} maxSize={30}>
-            <ResizablePanelGroup direction="vertical">
-              {/* Inspector Content */}
-              <ResizablePanel defaultSize={isAnimationMode ? 75 : 100} minSize={30}>
-                <div className="flex h-full flex-col border-l overflow-hidden">
-                  <ArmaturePanel />
-                  <div className="px-3 py-2 border-b shrink-0 flex items-center justify-between">
-                    <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Inspector</h2>
-                  </div>
-                  <div className="flex-1 overflow-hidden">
-                    <Inspector onRemesh={handleRemesh} onDeleteMesh={handleDeleteMesh} />
-                  </div>
-                </div>
-              </ResizablePanel>
-
-              {isAnimationMode && (
-                <>
-                  <ResizableHandle />
-                  {/* Animations Content */}
-                  <ResizablePanel defaultSize={25} minSize={10}>
-                    <AnimationListPanel />
+          {nodes.length > 0 && (
+            <>
+              <ResizableHandle />
+              <ResizablePanel
+                defaultSize={25}
+                minSize={20}
+                maxSize={40}
+                className={cn("bg-card border-l transition-all duration-300", (!nodes.length || wizardStep) && "hidden")}
+              >
+                <ResizablePanelGroup direction="vertical">
+                  {/* Inspector Content */}
+                  <ResizablePanel defaultSize={isAnimationMode ? 75 : 100} minSize={30}>
+                    <div className="flex h-full flex-col border-l overflow-hidden">
+                      <ArmaturePanel />
+                      <div className="px-3 py-2 border-b shrink-0 flex items-center justify-between">
+                        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Inspector</h2>
+                      </div>
+                      <div className="flex-1 overflow-hidden">
+                        <Inspector onRemesh={handleRemesh} onDeleteMesh={handleDeleteMesh} />
+                      </div>
+                    </div>
                   </ResizablePanel>
-                </>
-              )}
-            </ResizablePanelGroup>
-          </ResizablePanel>
+
+                  {isAnimationMode && (
+                    <>
+                      <ResizableHandle />
+                      {/* Animations Content */}
+                      <ResizablePanel defaultSize={25} minSize={10}>
+                        <AnimationListPanel />
+                      </ResizablePanel>
+                    </>
+                  )}
+                </ResizablePanelGroup>
+              </ResizablePanel>
+            </>
+          )}
         </ResizablePanelGroup>
       </div>
 

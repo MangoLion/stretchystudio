@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { produce } from 'immer';
+import { pushSnapshot, isBatching, clearHistory } from '@/store/undoHistory';
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
@@ -31,8 +32,12 @@ export const useProjectStore = create((set) => ({
         transform:  { x, y, rotation, scaleX, scaleY, pivotX, pivotY },
         meshOpts:   { alphaThreshold, smoothPasses, gridSpacing, edgePadding, numEdgePoints } | null,
         mesh:       { vertices, uvs, triangles, edgeIndices } | null,
-        blendShapes: [{ id, name, deltas: [{dx, dy}] }] | null,  // shape key definitions
+        blendShapes: [{ id, name, deltas: [{dx, dy}], pinDeltas: [{pinId, dx, dy}] | null }] | null,
         blendShapeValues: { [shapeId]: number (0–1) },             // staging-mode influences
+        puppetWarp: {
+          enabled: boolean,
+          pins: [{ id, restX, restY, x, y }],  // image-space coords; x/y = current, rest = original
+        } | null,
       }
 
       Node schema (type === 'group'):
@@ -62,10 +67,16 @@ export const useProjectStore = create((set) => ({
 
   // ── Actions ────────────────────────────────────────────────────────────────
 
-  /** Generic immer recipe — use for all undoable project edits */
-  updateProject: (recipe) => set(produce((state) => {
-    recipe(state.project, state.versionControl);
-  })),
+  /** Generic immer recipe — use for all undoable project edits.
+   *  Auto-snapshots before mutation unless { skipHistory: true } is passed. */
+  updateProject: (recipe, { skipHistory = false } = {}) => set((state) => {
+    if (!skipHistory && !isBatching()) {
+      pushSnapshot(state.project);
+    }
+    return produce((state) => {
+      recipe(state.project, state.versionControl);
+    })(state);
+  }),
 
   /** Create a new empty group node */
   createGroup: (name) => set(produce((state) => {
@@ -161,43 +172,91 @@ export const useProjectStore = create((set) => ({
   })),
 
   /** Reset project to empty state */
-  resetProject: () => set(produce((state) => {
-    state.project.canvas   = { width: 800, height: 600, x: 0, y: 0, bgEnabled: false, bgColor: '#ffffff' };
-    state.project.textures = [];
-    state.project.nodes    = [];
-    state.project.parameters = [];
-    state.project.physics_groups = [];
-    state.project.animations = [];
-    state.versionControl.geometryVersion++;
-    state.versionControl.transformVersion++;
-    state.versionControl.textureVersion++;
-  })),
+  resetProject: () => {
+    clearHistory();
+    return set(produce((state) => {
+      state.project.canvas   = { width: 800, height: 600, x: 0, y: 0, bgEnabled: false, bgColor: '#ffffff' };
+      state.project.textures = [];
+      state.project.nodes    = [];
+      state.project.parameters = [];
+      state.project.physics_groups = [];
+      state.project.animations = [];
+      state.versionControl.geometryVersion++;
+      state.versionControl.transformVersion++;
+      state.versionControl.textureVersion++;
+    }));
+  },
 
   /** Load a deserialized project from file */
-  loadProject: (projectData) => set(produce((state) => {
-    state.project.version = projectData.version;
-    state.project.canvas = {
-      width: 800, height: 600, x: 0, y: 0, bgEnabled: false, bgColor: '#ffffff',
-      ...projectData.canvas,
-    };
-    state.project.textures = projectData.textures;
-    // Ensure blend shapes fields exist on all nodes (forward-compat with old files)
-    const nodes = projectData.nodes ?? [];
-    for (const node of nodes) {
-      if (node.blendShapes === undefined) node.blendShapes = [];
-      if (node.blendShapeValues === undefined) node.blendShapeValues = {};
-    }
-    state.project.nodes = nodes;
-    state.project.animations = projectData.animations ?? [];
-    state.project.parameters = projectData.parameters ?? [];
-    state.project.physics_groups = projectData.physics_groups ?? [];
-    state.versionControl.geometryVersion++;
-    state.versionControl.transformVersion++;
-    state.versionControl.textureVersion++;
-  })),
+  loadProject: (projectData) => {
+    clearHistory();
+    return set(produce((state) => {
+      state.project.version = projectData.version;
+      state.project.canvas = {
+        width: 800, height: 600, x: 0, y: 0, bgEnabled: false, bgColor: '#ffffff',
+        ...projectData.canvas,
+      };
+      state.project.textures = projectData.textures;
+      // Ensure blend shapes fields exist on all nodes (forward-compat with old files)
+      const nodes = projectData.nodes ?? [];
+      for (const node of nodes) {
+        if (node.blendShapes === undefined) node.blendShapes = [];
+        if (node.blendShapeValues === undefined) node.blendShapeValues = {};
+        if (node.puppetWarp === undefined) node.puppetWarp = null;
+      }
+      state.project.nodes = nodes;
+      state.project.animations = projectData.animations ?? [];
+      state.project.parameters = projectData.parameters ?? [];
+      state.project.physics_groups = projectData.physics_groups ?? [];
+      state.versionControl.geometryVersion++;
+      state.versionControl.transformVersion++;
+      state.versionControl.textureVersion++;
+    }));
+  },
 
   /** Update canvas properties */
   updateCanvas: (partial) => set(produce((state) => {
     Object.assign(state.project.canvas, partial);
+  })),
+
+  /** Enable or disable puppet warp on a part node */
+  setPuppetWarpEnabled: (nodeId, enabled) => set(produce((state) => {
+    const node = state.project.nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    if (enabled && !node.puppetWarp) {
+      node.puppetWarp = { enabled: true, pins: [] };
+    } else if (node.puppetWarp) {
+      node.puppetWarp.enabled = enabled;
+    }
+    state.versionControl.geometryVersion++;
+  })),
+
+  /** Add a pin at image-space rest position */
+  addPuppetPin: (nodeId, restX, restY) => set(produce((state) => {
+    const node = state.project.nodes.find(n => n.id === nodeId);
+    if (!node?.puppetWarp) return;
+    node.puppetWarp.pins.push({
+      id: uid(),
+      restX, restY,
+      x: restX, y: restY,
+    });
+    state.versionControl.geometryVersion++;
+  })),
+
+  /** Remove a pin by id */
+  removePuppetPin: (nodeId, pinId) => set(produce((state) => {
+    const node = state.project.nodes.find(n => n.id === nodeId);
+    if (!node?.puppetWarp) return;
+    node.puppetWarp.pins = node.puppetWarp.pins.filter(p => p.id !== pinId);
+    state.versionControl.geometryVersion++;
+  })),
+
+  /** Move a pin's current position (staging mode — bakes directly into node) */
+  setPuppetPinPosition: (nodeId, pinId, x, y) => set(produce((state) => {
+    const node = state.project.nodes.find(n => n.id === nodeId);
+    const pin = node?.puppetWarp?.pins?.find(p => p.id === pinId);
+    if (!pin) return;
+    pin.x = x; pin.y = y;
+    state.versionControl.geometryVersion++;
   })),
 }));

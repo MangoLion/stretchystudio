@@ -71,6 +71,15 @@ export const useEditorStore = create((set) => ({
   /** The ID of the blend shape currently being edited (null if not in edit mode) */
   activeBlendShapeId: null,
 
+  /** When true, clicking on a puppet-warp-enabled part places / removes pins */
+  puppetPinEditMode: false,
+
+  /** ID of the part node whose puppet pins are being edited */
+  puppetPinPartId: null,
+
+  /** Current step in the PSD import wizard: null | 'review' | 'reorder' | 'adjust' | 'dwpose' */
+  wizardStep: null,
+
   setSelection: (nodeIds) => set((state) => ({
     selection: nodeIds,
     // Exit mesh edit mode if selection changes to a different node or clears
@@ -90,7 +99,19 @@ export const useEditorStore = create((set) => ({
       nodeIds[0] === state.selection[0]
         ? state.activeBlendShapeId
         : null,
+    // Also exit puppet pin edit mode if selection changes
+    puppetPinEditMode: state.puppetPinEditMode &&
+      nodeIds.length > 0 &&
+      nodeIds[0] === state.puppetPinPartId
+        ? state.puppetPinEditMode
+        : false,
+    puppetPinPartId: state.puppetPinEditMode &&
+      nodeIds.length > 0 &&
+      nodeIds[0] === state.puppetPinPartId
+        ? state.puppetPinPartId
+        : null,
   })),
+  setWizardStep:         (step)     => set({ wizardStep: step }),
   setMeshEditMode:      (on)       => set({ meshEditMode: on, toolMode: 'select' }),
   setMeshSubMode:       (mode)     => set({ meshSubMode: mode, toolMode: 'select' }),
   setBrush:             (partial)  => set((s) => ({ brushSize: s.brushSize, brushHardness: s.brushHardness, ...partial })),
@@ -131,5 +152,20 @@ export const useEditorStore = create((set) => ({
     blendShapeEditMode: false,
     activeBlendShapeId: null,
     meshEditMode: false,
+  }),
+
+  /** Enter puppet pin edit mode for a specific part */
+  enterPuppetPinEditMode: (partId) => set({
+    puppetPinEditMode: true,
+    puppetPinPartId: partId,
+    meshEditMode: false,
+    blendShapeEditMode: false,
+    activeBlendShapeId: null,
+  }),
+
+  /** Exit puppet pin edit mode */
+  exitPuppetPinEditMode: () => set({
+    puppetPinEditMode: false,
+    puppetPinPartId: null,
   }),
 }));

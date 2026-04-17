@@ -157,6 +157,7 @@ export function LayerPanel() {
   const setSelection      = useEditorStore(s => s.setSelection);
   const activeLayerTab    = useEditorStore(s => s.activeLayerTab);
   const setActiveLayerTab = useEditorStore(s => s.setActiveLayerTab);
+  const wizardStep        = useEditorStore(s => s.wizardStep);
 
   // Context menu state (Depth tab)
   const [ctxMenu, setCtxMenu] = useState(null); // { nodeId, x, y }
@@ -301,7 +302,7 @@ export function LayerPanel() {
 
       {/* Tab bar */}
       <div className="flex items-center border-b shrink-0">
-        {['depth', 'groups'].map(tab => (
+        {['depth', 'groups'].filter(t => !wizardStep || t !== 'groups').map(tab => (
           <button
             key={tab}
             className={`flex-1 py-1.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${

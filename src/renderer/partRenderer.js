@@ -225,7 +225,7 @@ export class PartRenderer {
     if (!state || !state.vao || state.indexCount === 0 || state.edgeIndexCount === 0) return;
 
     gl.uniformMatrix3fv(uMvp, false, mvp);
-    gl.uniform4f(uColor, 0.2, 0.9, 0.5, 0.6); // translucent green
+    // Color is set by caller (ScenePass) via uColor location
 
     gl.bindVertexArray(state.vao);
     // Draw as lines — loop over each triangle
@@ -269,21 +269,10 @@ export class PartRenderer {
     if (!state || !state.vao || state.vertCount === 0) return;
 
     gl.bindVertexArray(state.vao);
-
-    // 1. Draw all vertices (Density points - dark blue/purple)
     gl.uniformMatrix3fv(uMvp, false, mvp);
-    gl.uniform4f(uColor, 0.4, 0.2, 0.8, 0.8); // Purple for density
-    gl.drawArrays(gl.POINTS, 0, state.vertCount);
 
-    // 2. Draw edge vertices (Bright green)
-    if (state.edgeIndexCount > 0) {
-      gl.uniform4f(uColor, 0.2, 0.9, 0.1, 1.0); // Bright green for edges
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.edgeIbo);
-      gl.drawElements(gl.POINTS, state.edgeIndexCount, gl.UNSIGNED_SHORT, 0);
-      
-      // Restore standard triangle index buffer binding for this VAO
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, state.ibo);
-    }
+    // DRAW ALL: Circles with black outlines (handled by shader when u_is_point is true)
+    gl.drawArrays(gl.POINTS, 0, state.vertCount);
 
     gl.bindVertexArray(null);
   }

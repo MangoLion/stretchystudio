@@ -44,7 +44,7 @@ uniform mat3 u_mvp;
 void main() {
   vec3 pos = u_mvp * vec3(a_position, 1.0);
   gl_Position = vec4(pos.xy, 0.0, 1.0);
-  gl_PointSize = 6.0; // Fixed size for vertices
+  gl_PointSize = 7.0; // Slightly larger for outline
 }
 `;
 
@@ -53,9 +53,29 @@ export const WIRE_FRAG = `#version 300 es
 precision mediump float;
 
 uniform vec4 u_color;
+uniform bool u_is_point;
+
 out vec4 out_color;
 
 void main() {
-  out_color = vec4(u_color.rgb * u_color.a, u_color.a);
+  if (u_is_point) {
+    vec2 pc = gl_PointCoord - vec2(0.5);
+    float dist = length(pc);
+    if (dist > 0.5) discard;
+    
+    // Simple antialiasing
+    float delta = 0.05;
+    float alpha = 1.0 - smoothstep(0.45, 0.5, dist);
+    
+    // White fill with black outline
+    if (dist > 0.3) {
+      out_color = vec4(0.0, 0.0, 0.0, alpha); // Black outline
+    } else {
+      out_color = vec4(1.0, 1.0, 1.0, alpha); // White fill
+    }
+  } else {
+    // Standard alpha-blended line — output straight RGBA (not pre-multiplied)
+    out_color = u_color;
+  }
 }
 `;

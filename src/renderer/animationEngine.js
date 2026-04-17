@@ -117,7 +117,7 @@ export function interpolateTrack(keyframes, timeMs, loopKeyframes = false, endMs
 function interpolateMeshVerts(keyframes, timeMs, loopKeyframes = false, endMs = 0) {
   if (!keyframes || keyframes.length === 0) return undefined;
   if (timeMs <= keyframes[0].time) return keyframes[0].value;
-  
+
   if (timeMs >= keyframes[keyframes.length - 1].time) {
     if (loopKeyframes && timeMs < endMs && keyframes.length > 0) {
       const kLast = keyframes[keyframes.length - 1];
@@ -155,6 +155,59 @@ function interpolateMeshVerts(keyframes, timeMs, loopKeyframes = false, endMs = 
 }
 
 /**
+ * Interpolate puppet pin positions between two keyframes.
+ * Each keyframe value is [{id, x, y}, ...].
+ * Pins are matched by id (not index) to be robust to future pin additions.
+ */
+function interpolatePuppetPins(keyframes, timeMs, loopKeyframes = false, endMs = 0) {
+  if (!keyframes || keyframes.length === 0) return undefined;
+  if (timeMs <= keyframes[0].time) return keyframes[0].value;
+
+  if (timeMs >= keyframes[keyframes.length - 1].time) {
+    if (loopKeyframes && timeMs < endMs && keyframes.length > 0) {
+      const kLast = keyframes[keyframes.length - 1];
+      const kFirst = keyframes[0];
+      const t = (timeMs - kLast.time) / (endMs - kLast.time);
+      const te = evaluateEasing(t, kLast.easing);
+      return lerpPinArrays(kLast.value, kFirst.value, te);
+    }
+    return keyframes[keyframes.length - 1].value;
+  }
+
+  let lo = 0;
+  let hi = keyframes.length - 2;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (keyframes[mid + 1].time <= timeMs) lo = mid + 1;
+    else hi = mid;
+  }
+
+  const kA = keyframes[lo];
+  const kB = keyframes[lo + 1];
+  const t  = (timeMs - kA.time) / (kB.time - kA.time);
+  const te = evaluateEasing(t, kA.easing);
+  return lerpPinArrays(kA.value, kB.value, te);
+}
+
+/**
+ * Linearly interpolate between two puppet pin arrays.
+ * Pins are matched by id.
+ * @private
+ */
+function lerpPinArrays(pinsA, pinsB, t) {
+  const bMap = new Map(pinsB.map(p => [p.id, p]));
+  return pinsA.map(pA => {
+    const pB = bMap.get(pA.id);
+    if (!pB) return { id: pA.id, x: pA.x, y: pA.y };
+    return {
+      id: pA.id,
+      x: pA.x + (pB.x - pA.x) * t,
+      y: pA.y + (pB.y - pA.y) * t,
+    };
+  });
+}
+
+/**
  * Compute pose overrides for all tracks in an animation at the given time.
  *
  * @param {Object|null} animation  - single animation object (project.animations[i])
@@ -172,6 +225,8 @@ export function computePoseOverrides(animation, timeMs, loopKeyframes = false, e
     let value;
     if (track.property === 'mesh_verts') {
       value = interpolateMeshVerts(track.keyframes, timeMs, loopKeyframes, endMs);
+    } else if (track.property === 'puppet_pins') {
+      value = interpolatePuppetPins(track.keyframes, timeMs, loopKeyframes, endMs);
     } else {
       value = interpolateTrack(track.keyframes, timeMs, loopKeyframes, endMs);
     }

@@ -19,6 +19,7 @@ import { useProjectStore } from '@/store/projectStore';
 import { useAnimationStore } from '@/store/animationStore';
 import { computePoseOverrides } from '@/renderer/animationEngine';
 import { computeWorldMatrices, mat3Identity, mat3Inverse } from '@/renderer/transforms';
+import { beginBatch, endBatch } from '@/store/undoHistory';
 
 const MOVE_RADIUS   = 8;
 const ROT_RADIUS    = 6;
@@ -174,6 +175,9 @@ export function GizmoOverlay() {
   function startMoveDrag(e) {
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
+    if (editorModeRef.current === 'staging') {
+      beginBatch(useProjectStore.getState().project);
+    }
     dragRef.current = {
       type:         'move',
       nodeId:       selectedNode.id,
@@ -188,6 +192,9 @@ export function GizmoOverlay() {
   function startRotateDrag(e) {
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
+    if (editorModeRef.current === 'staging') {
+      beginBatch(useProjectStore.getState().project);
+    }
     const svgRect = svgRef.current.getBoundingClientRect();
     const px = svgRect.left + pivotScreenX;
     const py = svgRect.top  + pivotScreenY;
@@ -208,6 +215,9 @@ export function GizmoOverlay() {
   function startPivotDrag(e) {
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
+    if (editorModeRef.current === 'staging') {
+      beginBatch(useProjectStore.getState().project);
+    }
     dragRef.current = {
       type:         'pivot',
       nodeId:       selectedNode.id,
@@ -267,7 +277,7 @@ export function GizmoOverlay() {
           if (!node.transform) node.transform = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
           node.transform.x = drag.startX + dx;
           node.transform.y = drag.startY + dy;
-        });
+        }, { skipHistory: true });
       }
       return;
     }
@@ -290,7 +300,7 @@ export function GizmoOverlay() {
           if (!node) return;
           if (!node.transform) node.transform = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
           node.transform.rotation = drag.startRotation + delta;
-        });
+        }, { skipHistory: true });
       }
       return;
     }
@@ -299,7 +309,7 @@ export function GizmoOverlay() {
       const { zoom: z } = viewRef.current;
       const dx = (e.clientX - drag.startClientX) / z;
       const dy = (e.clientY - drag.startClientY) / z;
-      
+
       // Convert world delta to local delta using inverse matrix
       const { iswm } = drag;
       const dLx = iswm[0] * dx + iswm[3] * dy;
@@ -324,11 +334,12 @@ export function GizmoOverlay() {
         // This keeps world position stable while moving pivot
         t.x = drag.startX + dLx * (m0 - 1) + dLy * m3;
         t.y = drag.startY + dLx * m1 + dLy * (m4 - 1);
-      });
+      }, { skipHistory: true });
     }
   }
 
   function onDragEnd(e) {
+    endBatch();
     dragRef.current = null;
     e.currentTarget.releasePointerCapture(e.pointerId);
     if (useEditorStore.getState().autoKeyframe && useEditorStore.getState().editorMode === 'animation') {
@@ -348,9 +359,9 @@ export function GizmoOverlay() {
       <polygon
         points={bboxPoints}
         fill="none"
-        stroke="rgba(80,160,255,0.6)"
-        strokeWidth="1.5"
-        strokeDasharray="4 4"
+        stroke="rgba(255,60,60,0.8)"
+        strokeWidth="1.2"
+        strokeDasharray="4 2"
       />
 
       {/* Pivot handle (crosshair) */}

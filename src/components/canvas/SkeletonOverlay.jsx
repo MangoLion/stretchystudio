@@ -16,9 +16,11 @@ import { useProjectStore } from '@/store/projectStore';
 import { useEditorStore } from '@/store/editorStore';
 import { useAnimationStore } from '@/store/animationStore';
 import { SKELETON_CONNECTIONS } from '@/io/armatureOrganizer';
-import { computeWorldMatrices, mat3Identity } from '@/renderer/transforms';
+import { computeWorldMatrices, mat3Identity, mat3Inverse } from '@/renderer/transforms';
 import { computePoseOverrides } from '@/renderer/animationEngine';
+import { applyPuppetWarp } from '@/mesh/puppetWarp';
 import { useToast } from '@/hooks/use-toast';
+import { beginBatch, endBatch } from '@/store/undoHistory';
 
 // Colour palette
 const COLOUR_NORMAL = '#ef4444';      // red — not in edit mode
@@ -66,6 +68,14 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
 
   const selection      = useEditorStore(s => s.selection);
   const setSelection   = useEditorStore(s => s.setSelection);
+  const puppetPinEditMode = useEditorStore(s => s.puppetPinEditMode);
+  const puppetPinPartId = useEditorStore(s => s.puppetPinPartId);
+  const enterPuppetPinEditMode = useEditorStore(s => s.enterPuppetPinEditMode);
+  const exitPuppetPinEditMode = useEditorStore(s => s.exitPuppetPinEditMode);
+  const blendShapeEditMode = useEditorStore(s => s.blendShapeEditMode);
+  const activeBlendShapeId = useEditorStore(s => s.activeBlendShapeId);
+  const addPuppetPin = useProjectStore(s => s.addPuppetPin);
+  const removePuppetPin = useProjectStore(s => s.removePuppetPin);
   const animCurrentTime       = useAnimationStore(s => s.currentTime);
   const animActiveAnimationId = useAnimationStore(s => s.activeAnimationId);
   const animDraftPose         = useAnimationStore(s => s.draftPose);
@@ -133,15 +143,74 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
     return map;
   }, [effectiveNodes]);
 
+  /* ── Compute keyframe overrides (before pointer handlers) ── */
+
+  const activeAnim = animations.find(a => a.id === animActiveAnimationId) ?? null;
+  const endMs = (animEndFrame / animFps) * 1000;
+  const keyframeOverrides = computePoseOverrides(activeAnim, animCurrentTime, animLoopKeyframes, endMs);
+
   /* ── Pointer handlers — defined unconditionally (Rules of Hooks) ── */
 
-  const onPointerDown = useCallback((e, nodeId, dragType = 'joint') => {
+  const onPointerDown = useCallback((e, nodeId, dragType = 'joint', pinId = null) => {
     if (e.button !== 0) return; // Only handle left-click; middle/right pass through
 
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
 
-    if (dragType === 'joint') {
+    if (dragType === 'puppetPin') {
+      // Puppet pin drag — only active outside pin edit mode
+      if (puppetPinEditMode) return;
+      const svg = svgRef.current;
+      if (!svg) return;
+      const rect = svg.getBoundingClientRect();
+      const cssX = e.clientX - rect.left;
+      const cssY = e.clientY - rect.top;
+
+      const worldMap = computeWorldMatrices(effectiveNodes);
+      const wm = worldMap.get(nodeId) ?? mat3Identity();
+      const iwm = mat3Inverse(wm);
+
+      const node = effectiveNodes.find(n => n.id === nodeId);
+      if (!node?.puppetWarp) return;
+      const pin = node.puppetWarp.pins.find(p => p.id === pinId);
+      if (!pin) return;
+
+      // Check if blend shape edit mode is active on this node
+      const bsState = useEditorStore.getState();
+      const bsShapeId = bsState.blendShapeEditMode ? bsState.activeBlendShapeId : null;
+      const isBlendShapeMode = !!bsShapeId && !!node.blendShapes?.some(s => s.id === bsShapeId);
+
+      // In blend shape edit mode, start from pinDelta-adjusted rest position
+      let startPinX = pin.x;
+      let startPinY = pin.y;
+      if (isBlendShapeMode) {
+        const activeShape = node.blendShapes.find(s => s.id === bsShapeId);
+        const pd = activeShape?.pinDeltas?.find(d => d.pinId === pin.id);
+        startPinX = pin.restX + (pd?.dx ?? 0);
+        startPinY = pin.restY + (pd?.dy ?? 0);
+      }
+
+      dragRef.current = {
+        type: 'puppetPin',
+        partId: nodeId,
+        pinId,
+        startPinX,
+        startPinY,
+        startScreenX: cssX,
+        startScreenY: cssY,
+        isAnimMode: editorModeRef.current === 'animation' && !isBlendShapeMode,
+        isBlendShapeMode,
+        blendShapeId: bsShapeId,
+        iwm,
+      };
+
+      setSelection([nodeId]);
+
+      // Begin batch for staging mode or blend shape edit mode (both update project)
+      if (!dragRef.current.isAnimMode) {
+        beginBatch(useProjectStore.getState().project);
+      }
+    } else if (dragType === 'joint') {
       // Joint drag — only active in skeleton edit mode
       if (!skeletonEditMode) return;
       dragRef.current = { type: 'joint', nodeId };
@@ -178,6 +247,10 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
       };
 
       setSelection([nodeId]);
+
+      if (editorModeRef.current === 'staging') {
+        beginBatch(useProjectStore.getState().project);
+      }
 
       const dx = cssX - tpx;
       const dy = cssY - tpy;
@@ -271,8 +344,12 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
 
       // Select the bone so GizmoOverlay appears
       setSelection([nodeId]);
+
+      if (editorModeRef.current === 'staging') {
+        beginBatch(useProjectStore.getState().project);
+      }
     }
-  }, [skeletonEditMode, effectiveNodes, setSelection, animations, animActiveAnimationId, animCurrentTime, animDraftPose]);
+  }, [skeletonEditMode, puppetPinEditMode, effectiveNodes, setSelection, animations, animActiveAnimationId, animCurrentTime, animDraftPose]);
 
   const onPointerMove = useCallback((e) => {
     const drag = dragRef.current;
@@ -293,7 +370,7 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
           node.transform.pivotX = imgX;
           node.transform.pivotY = imgY;
         }
-      });
+      }, { skipHistory: true });
     } else if (drag.type === 'rotate') {
       // Rotation arc drag
       const cssX = e.clientX - rect.left;
@@ -314,7 +391,7 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
           if (!node) return;
           if (!node.transform) node.transform = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
           node.transform.rotation = drag.startRotation + delta;
-        });
+        }, { skipHistory: true });
       }
       
       // Apply JS vertex skinning if there are dependent parts.
@@ -372,17 +449,104 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
            if (!pn.transform) pn.transform = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
            pn.transform.x = newX;
            pn.transform.y = newY;
-         });
+         }, { skipHistory: true });
+      }
+    } else if (drag.type === 'puppetPin') {
+      const { zoom, panX, panY } = viewRef.current;
+      const cssX = e.clientX - rect.left;
+      const cssY = e.clientY - rect.top;
+
+      // Screen delta → world delta (divide by zoom)
+      const screenDx = (cssX - drag.startScreenX) / zoom;
+      const screenDy = (cssY - drag.startScreenY) / zoom;
+      const iwm = drag.iwm;
+      const localDx = iwm[0] * screenDx + iwm[3] * screenDy;
+      const localDy = iwm[1] * screenDx + iwm[4] * screenDy;
+
+      const newX = drag.startPinX + localDx;
+      const newY = drag.startPinY + localDy;
+
+      if (drag.isBlendShapeMode) {
+        // Blend shape edit mode: write pinDeltas + recompute vertex deltas via IDW
+        const node = effectiveNodes.find(n => n.id === drag.partId);
+        if (!node?.puppetWarp || !node.mesh) return;
+        const basePins = node.puppetWarp.pins;
+        const activeShape = node.blendShapes?.find(s => s.id === drag.blendShapeId);
+        const existingDeltas = activeShape?.pinDeltas ?? [];
+
+        // Build effective pins: dragged pin at new position, all others at their shape delta
+        const effectivePins = basePins.map(p => {
+          if (p.id === drag.pinId) {
+            return { restX: p.restX, restY: p.restY, x: newX, y: newY };
+          }
+          const ex = existingDeltas.find(d => d.pinId === p.id);
+          return { restX: p.restX, restY: p.restY, x: p.restX + (ex?.dx ?? 0), y: p.restY + (ex?.dy ?? 0) };
+        });
+
+        // Apply IDW to rest vertices to get warped positions
+        const restVerts = node.mesh.vertices.map(v => ({ x: v.restX, y: v.restY }));
+        const warpedVerts = applyPuppetWarp(restVerts, effectivePins);
+
+        // Compute pinDeltas for storage (skip zero-delta pins)
+        const newPinDeltas = basePins
+          .map(p => {
+            if (p.id === drag.pinId) return { pinId: p.id, dx: newX - p.restX, dy: newY - p.restY };
+            const ex = existingDeltas.find(d => d.pinId === p.id);
+            return ex ? { ...ex } : null;
+          })
+          .filter(d => d && (d.dx !== 0 || d.dy !== 0));
+
+        updateProject((proj) => {
+          const pnode = proj.nodes.find(n => n.id === drag.partId);
+          const shape = pnode?.blendShapes?.find(s => s.id === drag.blendShapeId);
+          if (!shape) return;
+          shape.pinDeltas = newPinDeltas.length > 0 ? newPinDeltas : null;
+          shape.deltas = node.mesh.vertices.map((v, i) => ({
+            dx: warpedVerts[i].x - v.restX,
+            dy: warpedVerts[i].y - v.restY,
+          }));
+        }, { skipHistory: true });
+        return;
+      } else if (drag.isAnimMode) {
+        // Animation mode: write to draftPose
+        const node = effectiveNodes.find(n => n.id === drag.partId);
+        if (!node?.puppetWarp) return;
+        // Merge restX/restY from base pins — keyframe pins only have {id, x, y}
+        const rawPins = getPuppetPins(node, animDraftPose, keyframeOverrides);
+        const currentPins = rawPins.map(p => {
+          const base = node.puppetWarp.pins.find(b => b.id === p.id);
+          return { restX: base?.restX ?? p.restX ?? p.x, restY: base?.restY ?? p.restY ?? p.y, ...p };
+        });
+        const updatedPins = currentPins.map(p =>
+          p.id === drag.pinId ? { ...p, x: newX, y: newY } : p
+        );
+        setDraftPoseRef.current(drag.partId, { puppet_pins: updatedPins });
+      } else {
+        // Staging mode: update project directly
+        updateProject((proj) => {
+          const node = proj.nodes.find(n => n.id === drag.partId);
+          const pin = node?.puppetWarp?.pins?.find(p => p.id === drag.pinId);
+          if (pin) { pin.x = newX; pin.y = newY; }
+        }, { skipHistory: true });
       }
     }
-  }, [updateProject]);
+  }, [updateProject, effectiveNodes, animDraftPose, keyframeOverrides]);
 
   const clearDraftPoseForNodeRef = useRef(clearDraftPoseForNode);
   useEffect(() => { clearDraftPoseForNodeRef.current = clearDraftPoseForNode; }, [clearDraftPoseForNode]);
 
   const onPointerUp = useCallback(() => {
+    endBatch();
     const drag = dragRef.current;
     dragRef.current = null;
+
+    // Auto-keyframe for puppet pin drag
+    if (drag && drag.type === 'puppetPin' && drag.isAnimMode) {
+      const autoKeyframe = useEditorStore.getState().autoKeyframe;
+      if (autoKeyframe) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'K', code: 'KeyK' }));
+      }
+    }
 
     // Commit skinning draft pose on drag end
     if (drag?.type === 'rotate' && drag.dependentParts?.length > 0) {
@@ -413,10 +577,22 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
   }, [updateProject]);
 
 
+  /* ── Helper: get effective puppet pins with priority (draft > keyframe > base) ── */
+  function getPuppetPins(node, draftPose, poseOverrides) {
+    return draftPose.get(node.id)?.puppet_pins
+      ?? poseOverrides?.get(node.id)?.puppet_pins
+      ?? node?.puppetWarp?.pins ?? [];
+  }
+
   /* ── Early exit (after all hooks) ── */
 
   const hasArmature = Object.keys(boneNodes).length > 0;
-  if (!hasArmature || !showSkeleton) return null;
+  const hasPuppetPins = effectiveNodes.some(n => n.puppetWarp?.enabled && n.puppetWarp.pins.length > 0);
+  const blendShapeEditWithPins = blendShapeEditMode && effectiveNodes.some(
+    n => n.puppetWarp?.enabled && n.puppetWarp.pins.length > 0 && selection.includes(n.id)
+  );
+  if (!hasArmature && !hasPuppetPins) return null;
+  if (!showSkeleton && !puppetPinEditMode && !blendShapeEditWithPins) return null;
   if (editorMode !== 'staging' && editorMode !== 'animation') return null;
 
   const { zoom, panX, panY } = view;
@@ -462,7 +638,7 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
       <circle key={role}
         cx={cx} cy={cy} r={radius}
         fill={fill} stroke="#000" strokeWidth={1.5}
-        style={{ cursor: skeletonEditMode ? 'grab' : 'pointer', pointerEvents: 'auto' }}
+        style={{ cursor: skeletonEditMode ? 'grab' : 'pointer', pointerEvents: puppetPinEditMode ? 'none' : 'auto' }}
         onPointerDown={(e) => onPointerDown(e, node.id, 'joint')}
         onClick={() => !skeletonEditMode && setSelection([node.id])}
       />
@@ -539,7 +715,7 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
           <rect
              x={tpx - half} y={tpy - half} width={TP_SIZE} height={TP_SIZE} rx={8}
              fill="rgba(20,20,20,0.75)" stroke="rgba(255,255,255,0.2)" strokeWidth={1}
-             style={{ cursor: 'crosshair', pointerEvents: 'auto' }}
+             style={{ cursor: 'crosshair', pointerEvents: puppetPinEditMode ? 'none' : 'auto' }}
              onPointerDown={(e) => onPointerDown(e, node.id, 'trackpad')}
           />
           <line x1={tpx} y1={tpy - half} x2={tpx} y2={tpy + half} stroke="rgba(255,255,255,0.15)" strokeWidth={1} strokeDasharray="2 2" pointerEvents="none" />
@@ -567,25 +743,123 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
         stroke={isActive ? ARC_ACTIVE : ARC_COLOUR}
         strokeWidth={ARC_STROKE_W}
         strokeLinecap="round"
-        style={{ cursor: 'alias', pointerEvents: 'visibleStroke' }}
+        style={{ cursor: 'alias', pointerEvents: puppetPinEditMode ? 'none' : 'visibleStroke' }}
         onPointerDown={(e) => onPointerDown(e, node.id, 'rotate')}
       />
     );
+  }
+
+  // ── Puppet Warp Pins ──────────────────────────────────────────────────────
+  const puppetPins = [];
+
+  for (const node of effectiveNodes) {
+    if (node.type !== 'part' || !node.puppetWarp?.enabled) continue;
+    const wm = worldMap.get(node.id) ?? mat3Identity();
+
+    // In blend shape edit mode, show pins at their shape-delta positions
+    const isBlendShapeEditNode = blendShapeEditMode && activeBlendShapeId && selection.includes(node.id);
+    let displayPins;
+    if (isBlendShapeEditNode) {
+      const activeShape = node.blendShapes?.find(s => s.id === activeBlendShapeId);
+      const pinDeltas = activeShape?.pinDeltas ?? [];
+      const deltaMap = new Map(pinDeltas.map(d => [d.pinId, d]));
+      displayPins = (node.puppetWarp.pins ?? []).map(p => {
+        const pd = deltaMap.get(p.id);
+        return { ...p, x: p.restX + (pd?.dx ?? 0), y: p.restY + (pd?.dy ?? 0) };
+      });
+    } else {
+      // Accumulate blend shape pin displacements at their current influences
+      const pinDisp = new Map();
+      if (node.blendShapes) {
+        const draft = animDraftPose.get(node.id);
+        const kfOv = keyframeOverrides?.get(node.id);
+        for (const shape of node.blendShapes) {
+          if (!shape.pinDeltas?.length) continue;
+          const prop = `blendShape:${shape.id}`;
+          const influence = draft?.[prop] ?? kfOv?.[prop] ?? node.blendShapeValues?.[shape.id] ?? 0;
+          if (!influence) continue;
+          for (const pd of shape.pinDeltas) {
+            const cur = pinDisp.get(pd.pinId) ?? { dx: 0, dy: 0 };
+            pinDisp.set(pd.pinId, { dx: cur.dx + pd.dx * influence, dy: cur.dy + pd.dy * influence });
+          }
+        }
+      }
+      if (pinDisp.size > 0) {
+        // Use node's base pins for restX/restY (keyframe pins may lack them)
+        const basePinMap = new Map((node.puppetWarp.pins ?? []).map(p => [p.id, p]));
+        const rawPins = getPuppetPins(node, animDraftPose, keyframeOverrides);
+        displayPins = rawPins.map(p => {
+          const d = pinDisp.get(p.id);
+          if (!d) return p;
+          const base = basePinMap.get(p.id);
+          const restX = base?.restX ?? p.restX ?? p.x;
+          const restY = base?.restY ?? p.restY ?? p.y;
+          return { ...p, x: restX + d.dx, y: restY + d.dy };
+        });
+      } else {
+        displayPins = getPuppetPins(node, animDraftPose, keyframeOverrides);
+      }
+    }
+
+    for (const pin of displayPins) {
+      // Transform pin from image-space via world matrix to screen
+      const sx = wm[0] * pin.x + wm[3] * pin.y + wm[6];
+      const sy = wm[1] * pin.x + wm[4] * pin.y + wm[7];
+      const cx = sx * zoom + panX;
+      const cy = sy * zoom + panY;
+
+      const isEditMode = puppetPinEditMode && puppetPinPartId === node.id;
+      const isDraggingThis = dragRef.current?.type === 'puppetPin' && dragRef.current?.pinId === pin.id;
+      const fill = isDraggingThis ? COLOUR_DRAG : (isEditMode ? COLOUR_EDIT : '#a855f7');
+      const pinRadius = isEditMode ? 8 : 6;
+
+      puppetPins.push(
+        <circle key={`pp-${pin.id}`}
+          cx={cx} cy={cy} r={pinRadius}
+          fill={fill} stroke="#000" strokeWidth={1.5}
+          style={{ cursor: isEditMode ? 'default' : 'grab', pointerEvents: 'auto' }}
+          onPointerDown={(e) => !isEditMode && onPointerDown(e, node.id, 'puppetPin', pin.id)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            if (isEditMode) removePuppetPin(node.id, pin.id);
+          }}
+        />
+      );
+    }
   }
 
   return (
     <>
       <svg
         ref={svgRef}
-        className="absolute inset-0 w-full h-full pointer-events-none"
+        className="absolute inset-0 w-full h-full"
+        style={{ pointerEvents: puppetPinEditMode ? 'all' : 'none' }}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerLeave={onPointerUp}
+        onClick={(e) => {
+          if (!puppetPinEditMode || !puppetPinPartId) return;
+          e.stopPropagation();
+          e.preventDefault();
+          const svg = svgRef.current;
+          if (!svg) return;
+          const rect = svg.getBoundingClientRect();
+          const cssX = e.clientX - rect.left;
+          const cssY = e.clientY - rect.top;
+          const wm = worldMap.get(puppetPinPartId) ?? mat3Identity();
+          const iwm = mat3Inverse(wm);
+          const worldX = (cssX - panX) / zoom;
+          const worldY = (cssY - panY) / zoom;
+          const imgX = iwm[0] * worldX + iwm[3] * worldY + iwm[6];
+          const imgY = iwm[1] * worldX + iwm[4] * worldY + iwm[7];
+          addPuppetPin(puppetPinPartId, imgX, imgY);
+        }}
       >
         {arcs}
         {lines}
         {circles}
         {trackpads}
+        {puppetPins}
       </svg>
 
       {/* Floating instruction toolbar — skeleton edit mode */}
@@ -595,6 +869,17 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
           <span className="text-xs font-semibold text-foreground">Adjust Joints</span>
           <span className="text-xs text-muted-foreground flex-1">
             Drag yellow dots to reposition joints.
+          </span>
+        </div>
+      )}
+
+      {/* Floating instruction toolbar — puppet pin edit mode */}
+      {puppetPinEditMode && (
+        <div className="absolute top-0 inset-x-0 z-40 flex items-center gap-4 px-4 py-2
+                        bg-background/90 border-b border-border backdrop-blur-sm">
+          <span className="text-xs font-semibold text-foreground">Place Puppet Pins</span>
+          <span className="text-xs text-muted-foreground flex-1">
+            Click canvas to place pins. Right-click a pin to remove it.
           </span>
         </div>
       )}

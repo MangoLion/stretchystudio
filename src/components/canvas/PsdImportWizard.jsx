@@ -7,6 +7,7 @@ import {
 } from '../../io/armatureOrganizer';
 import { splitLayerLR } from '../../io/splitLR';
 import { HelpIcon } from '../ui/help-icon';
+import { useToast } from '../../hooks/use-toast';
 
 export default function PsdImportWizard({
   step,
@@ -19,12 +20,17 @@ export default function PsdImportWizard({
   onComplete,
   onBack,
   onSplitArms,  // (rightLayer, leftLayer) → void  — replaces merged handwear with two layers
+  onReorder,
+  onApplyRig,
 }) {
+  const { toast } = useToast();
   const [rigStatus, setRigStatus] = useState('');
   const [rigLoading, setRigLoading] = useState(false);
   const [tagOverrides, setTagOverrides] = useState({});
   const [mappingExpanded, setMappingExpanded] = useState(false);
   const [splitError, setSplitError] = useState('');
+  const [meshAllParts, setMeshAllParts] = useState(true);
+  const [performSplit, setPerformSplit] = useState(true);
 
   const { psdW, psdH, layers, partIds } = pendingPsd || {};
 
@@ -64,83 +70,29 @@ export default function PsdImportWizard({
     });
   }, []);
 
-  /* ── Handle manual rigging (bounding-box heuristic) ────────────────────── */
-  const handleRigManually = useCallback(async () => {
-    setRigLoading(true);
-    try {
-      const layerMap = {};
-      effectiveLayers.forEach(l => {
-        const key = l.name.toLowerCase().trim();
-        layerMap[key] = l;
-      });
-      const groups = analyzeGroups(layerMap);
-
-      const skeleton = estimateSkeletonFromBounds(effectiveLayers, psdW, psdH);
-      const { groupDefs, assignments } = buildArmatureNodes(skeleton, groups, effectiveLayers, partIds, () => {
-        return `grp-${Math.random().toString(36).substr(2, 9)}`;
-      });
-
-      onFinalize(groupDefs, assignments);
-    } catch (err) {
-      console.error('[Manual Rig]', err);
-      setRigStatus(`Error: ${err.message}`);
-    } finally {
-      setRigLoading(false);
-    }
-  }, [effectiveLayers, psdW, psdH, partIds, onFinalize]);
-
-  /* ── Handle DWPose rigging ────────────────────────────────────────────── */
-  const runArmatureRig = useCallback(async (onnxPayload) => {
-    setRigLoading(true);
-    try {
-      setRigStatus('Loading ONNX model…');
-      const session = await loadDWPoseSession(onnxPayload);
-      onnxSessionRef.current = session;
-
-      const layerMap = {};
-      effectiveLayers.forEach(l => {
-        const key = l.name.toLowerCase().trim();
-        layerMap[key] = l;
-      });
-      const groups = analyzeGroups(layerMap);
-
-      const skeleton = await runDWPose(effectiveLayers, psdW, psdH, session, setRigStatus);
-
-      setRigStatus('Building rig…');
-      const { groupDefs, assignments } = buildArmatureNodes(skeleton, groups, effectiveLayers, partIds, () => {
-        return `grp-${Math.random().toString(36).substr(2, 9)}`;
-      });
-
-      onFinalize(groupDefs, assignments);
-    } catch (err) {
-      console.error('[AutoRig]', err);
-      setRigStatus(`Error: ${err.message}`);
-      clearDWPoseSession();
-    } finally {
-      setRigLoading(false);
-    }
-  }, [effectiveLayers, psdW, psdH, partIds, onFinalize, onnxSessionRef]);
-
-  /* ── Handle arm split confirmation ─────────────────────────────────────── */
-  const handleConfirmSplit = useCallback(() => {
+  const executeSplit = useCallback(() => {
     setSplitError('');
     // Find the merged handwear layer (using effectiveLayers so overrides are respected)
     const mergedIdx = effectiveLayers.findIndex(l => matchTag(l.name) === 'handwear');
-    if (mergedIdx === -1) {
-      onSetStep('choose');
-      return;
-    }
+    if (mergedIdx === -1) return false;
 
     const mergedLayer = effectiveLayers[mergedIdx];
     const result = splitLayerLR(mergedLayer, psdW, psdH);
 
     if (!result.right && !result.left) {
-      setSplitError(
-        `Could not find two separate components in the handwear layer ` +
+      const errorMsg = `Could not find two separate components in the handwear layer ` +
         `(found ${result.componentCount} component${result.componentCount !== 1 ? 's' : ''}). ` +
-        `The layer may be a single connected shape — continuing without split.`
-      );
-      return;
+        `The layer may be a single connected shape.`;
+
+      setSplitError(errorMsg + " — continuing without split.");
+
+      toast({
+        title: "Split Failed",
+        description: errorMsg,
+        variant: "destructive",
+      });
+
+      return false;
     }
 
     // Build replacement layers
@@ -165,8 +117,74 @@ export default function PsdImportWizard({
     } : null;
 
     onSplitArms(mergedIdx, rightLayer, leftLayer);
-    onSetStep('choose');
-  }, [effectiveLayers, psdW, psdH, onSplitArms, onSetStep]);
+    return true;
+  }, [effectiveLayers, psdW, psdH, onSplitArms]);
+
+  /* ── Handle manual rigging (bounding-box heuristic) ────────────────────── */
+  const handleRigManually = useCallback(async () => {
+    setRigLoading(true);
+    try {
+      const layerMap = {};
+      effectiveLayers.forEach(l => {
+        const key = l.name.toLowerCase().trim();
+        layerMap[key] = l;
+      });
+      const groups = analyzeGroups(layerMap);
+
+      const skeleton = estimateSkeletonFromBounds(effectiveLayers, psdW, psdH);
+      const { groupDefs, assignments } = buildArmatureNodes(skeleton, groups, effectiveLayers, partIds, () => {
+        return `grp-${Math.random().toString(36).substr(2, 9)}`;
+      });
+
+      if (step === 'reorder') {
+        onApplyRig(groupDefs, assignments, meshAllParts);
+      } else {
+        onFinalize(groupDefs, assignments, meshAllParts);
+      }
+    } catch (err) {
+      console.error('[Manual Rig]', err);
+      setRigStatus(`Error: ${err.message}`);
+    } finally {
+      setRigLoading(false);
+    }
+  }, [step, effectiveLayers, psdW, psdH, partIds, meshAllParts, onFinalize, onApplyRig]);
+
+  /* ── Handle DWPose rigging ────────────────────────────────────────────── */
+  const runArmatureRig = useCallback(async (onnxPayload) => {
+    setRigLoading(true);
+    try {
+      setRigStatus('Loading ONNX model…');
+      const session = await loadDWPoseSession(onnxPayload);
+      onnxSessionRef.current = session;
+
+      const layerMap = {};
+      effectiveLayers.forEach(l => {
+        const key = l.name.toLowerCase().trim();
+        layerMap[key] = l;
+      });
+      const groups = analyzeGroups(layerMap);
+
+      const skeleton = await runDWPose(effectiveLayers, psdW, psdH, session, setRigStatus);
+
+      setRigStatus('Building rig…');
+      const { groupDefs, assignments } = buildArmatureNodes(skeleton, groups, effectiveLayers, partIds, () => {
+        return `grp-${Math.random().toString(36).substr(2, 9)}`;
+      });
+
+      if (step === 'reorder') {
+        onApplyRig(groupDefs, assignments, meshAllParts);
+      } else {
+        onFinalize(groupDefs, assignments, meshAllParts);
+      }
+    } catch (err) {
+      console.error('[AutoRig]', err);
+      setRigStatus(`Error: ${err.message}`);
+      clearDWPoseSession();
+    } finally {
+      setRigLoading(false);
+    }
+  }, [step, effectiveLayers, psdW, psdH, partIds, meshAllParts, onFinalize, onApplyRig, onnxSessionRef]);
+
 
   /* ── Step: Review layer mapping ─────────────────────────────────────── */
   if (step === 'review') {
@@ -181,13 +199,13 @@ export default function PsdImportWizard({
     const hasWarnings = unmatchedLayers.length > 0;
     const allMatched = unmatchedLayers.length === 0;
 
-    // When user clicks Continue, check if arms are merged — if so, route to splitArms
+    // When user clicks Continue, enter the reorder step
     const handleContinue = () => {
-      if (armsMerged) {
-        onSetStep('splitArms');
-      } else {
-        onSetStep('choose');
+      if (armsMerged && performSplit) {
+        const ok = executeSplit();
+        if (!ok && splitError) return;
       }
+      onReorder();
     };
 
     return (
@@ -279,6 +297,38 @@ export default function PsdImportWizard({
             </p>
           )}
 
+          {/* Split arms toggle (only if merged arms detected) */}
+          {armsMerged && (
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
+                <input
+                  type="checkbox"
+                  checked={performSplit}
+                  onChange={e => setPerformSplit(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border border-border"
+                />
+                <span>Split merged arms (recommended)</span>
+              </label>
+              {splitError && (
+                <div className="flex items-start gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                  <AlertTriangle size={13} className="text-amber-400 mt-0.5 shrink-0" />
+                  <p className="text-[11px] text-amber-300 leading-relaxed">{splitError}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Mesh all parts checkbox */}
+          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
+            <input
+              type="checkbox"
+              checked={meshAllParts}
+              onChange={e => setMeshAllParts(e.target.checked)}
+              className="w-3.5 h-3.5 rounded border border-border"
+            />
+            <span>Mesh all parts after import</span>
+          </label>
+
           {/* Footer */}
           <div className="flex items-center justify-between border-t border-border pt-3 gap-1.5">
             <button
@@ -289,7 +339,7 @@ export default function PsdImportWizard({
             </button>
             <div className="flex items-center gap-1.5">
               <button
-                onClick={onSkip}
+                onClick={() => onSkip(meshAllParts)}
                 className="px-3 py-1.5 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0"
               >
                 Skip rigging
@@ -307,133 +357,37 @@ export default function PsdImportWizard({
     );
   }
 
-  /* ── Step: Split Left / Right Arms ──────────────────────────────────────── */
-  if (step === 'splitArms') {
+
+
+
+  /* ── Step: Reorder Layers (floating toolbar) ───────────────────────── */
+  if (step === 'reorder') {
     return (
-      <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70">
-        <div className="bg-popover border border-border rounded-lg shadow-2xl p-6 max-w-sm w-full mx-4 flex flex-col gap-5">
-
-          {/* Icon + heading */}
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex items-center justify-center w-9 h-9 rounded-full bg-primary/15 shrink-0">
-              <Scissors size={18} className="text-primary" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-foreground leading-snug">
-                Split left &amp; right arms?
-              </h3>
-              <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                Your <span className="text-foreground font-medium">handwear</span> layer
-                has both arms merged into one. Splitting them into{' '}
-                <span className="text-foreground font-medium">handwear-l</span> and{' '}
-                <span className="text-foreground font-medium">handwear-r</span> lets you
-                independently control depth, transform, and deformation for each arm.
-              </p>
-              <p className="mt-1.5 text-xs text-primary/80 font-medium">
-                Recommended — works best when both arms are visually separate.
-              </p>
-            </div>
-          </div>
-
-          {/* Error if split failed */}
-          {splitError && (
-            <div className="flex items-start gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-              <AlertTriangle size={13} className="text-amber-400 mt-0.5 shrink-0" />
-              <p className="text-[11px] text-amber-300 leading-relaxed">{splitError}</p>
-            </div>
-          )}
-
-          {/* Action buttons */}
-          <div className="flex flex-col gap-2">
-            <button
-              onClick={handleConfirmSplit}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium"
-            >
-              <Scissors size={14} />
-              Split arms (recommended)
-            </button>
-            <button
-              onClick={() => onSetStep('choose')}
-              className="w-full px-4 py-2 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-            >
-              Keep merged — continue without splitting
-            </button>
-          </div>
-
-          {/* Back */}
-          <div className="flex justify-start border-t border-border pt-3">
-            <button
-              className="px-3 py-1.5 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              onClick={() => onSetStep('review')}
-            >
-              ← Back
-            </button>
-          </div>
-
+      <div className="absolute top-0 inset-x-0 z-40 flex items-center gap-4 px-4 py-2
+                      bg-background/90 border-b border-border backdrop-blur-sm
+                      animate-in fade-in slide-in-from-top-4 duration-500 ease-out">
+        {/* Shimmer Attention Grabber */}
+        <div className="absolute top-0 inset-x-0 h-[2px] overflow-hidden opacity-30">
+          <div className="h-full w-1/4 bg-gradient-to-r from-transparent via-primary to-transparent animate-shimmer" />
         </div>
-      </div>
-    );
-  }
 
-  /* ── Step: Choose rigging method ────────────────────────────────────── */
-  if (step === 'choose') {
-    return (
-      <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70">
-        <div className="bg-popover border border-border rounded-lg shadow-2xl p-8 max-w-md w-full mx-4 flex flex-col gap-6">
-          <div>
-            <h3 className="text-lg font-semibold text-foreground mb-2">Set up character rig</h3>
-            <p className="text-sm text-muted-foreground leading-relaxed">
-              {matchCount} of {layers.length} layers match see-through part names.
-              Choose how you'd like to rig this character.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <button
-              disabled={rigLoading}
-              onClick={handleRigManually}
-              className="w-full p-4 text-sm rounded border border-border text-foreground hover:bg-muted transition-colors disabled:opacity-40 text-left group relative"
-            >
-              <div className="flex items-center gap-1.5 font-medium">
-                <span>Rig manually</span>
-                <HelpIcon tip="Instant skeleton estimation using only layer bounding boxes. Best foreground-only characters where arms/legs are clearly separated from the body." />
-              </div>
-              <div className="text-xs text-muted-foreground mt-0.5">Fast heuristic from layer positions</div>
-            </button>
-
-            <button
-              disabled={rigLoading}
-              onClick={() => onSetStep('dwpose')}
-              className="w-full p-4 text-sm rounded border border-border text-foreground hover:bg-muted transition-colors disabled:opacity-40 text-left group relative"
-            >
-              <div className="flex items-center gap-1.5 font-medium">
-                <span>Rig with DWPose</span>
-                <HelpIcon tip="High-accuracy whole-body pose detection using an ONNX model. Best for 'see-through' characters where joints are occlusion-heavy." />
-              </div>
-              <div className="text-xs text-muted-foreground mt-0.5">High-accuracy AI pose detection</div>
-            </button>
-
-            <button
-              disabled={rigLoading}
-              onClick={onSkip}
-              className="w-full p-3 text-sm rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40"
-            >
-              <div className="font-medium">Skip rigging</div>
-              <div className="text-xs text-muted-foreground">Import flat, no skeleton</div>
-            </button>
-          </div>
-
-          {/* Back to review (or splitArms if arms were merged) */}
-          <div className="flex justify-start border-t border-border pt-3">
-            <button
-              disabled={rigLoading}
-              className="px-3 py-1.5 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40"
-              onClick={() => onSetStep(armsMerged ? 'splitArms' : 'review')}
-            >
-              ← Back
-            </button>
-          </div>
-        </div>
+        <span className="text-xs font-semibold text-foreground">Step 2: Reorder Layers</span>
+        <span className="text-xs text-muted-foreground flex-1">
+          Rearrange layers in the Layer Panel as needed to fix any ordering issues.
+        </span>
+        <button
+          onClick={onCancel}
+          className="px-2 py-1 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={handleRigManually}
+          className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-all font-bold
+                     shadow-lg shadow-primary/20 ring-1 ring-primary/50 animate-in zoom-in-95 duration-700 delay-300 fill-mode-both"
+        >
+          Next: Adjust Joints →
+        </button>
       </div>
     );
   }
@@ -511,7 +465,7 @@ export default function PsdImportWizard({
             <button
               disabled={rigLoading}
               className="px-3 py-1.5 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40"
-              onClick={() => onSetStep('choose')}
+              onClick={() => onSetStep('adjust')}
             >
               ← Back
             </button>
@@ -525,11 +479,33 @@ export default function PsdImportWizard({
   if (step === 'adjust') {
     return (
       <div className="absolute top-0 inset-x-0 z-40 flex items-center gap-4 px-4 py-2
-                      bg-background/90 border-b border-border backdrop-blur-sm">
-        <span className="text-xs font-semibold text-foreground">Adjust Joints</span>
+                      bg-background/90 border-b border-border backdrop-blur-sm
+                      animate-in fade-in slide-in-from-top-4 duration-500 ease-out">
+        {/* Shimmer Attention Grabber */}
+        <div className="absolute top-0 inset-x-0 h-[2px] overflow-hidden opacity-30">
+          <div className="h-full w-1/4 bg-gradient-to-r from-transparent via-primary to-transparent animate-shimmer" />
+        </div>
+
+        <span className="text-xs font-semibold text-foreground">Step 3: Adjust Joints</span>
         <span className="text-xs text-muted-foreground flex-1">
           Drag yellow dots to reposition joints.
         </span>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors shrink-0">
+          <input
+            type="checkbox"
+            checked={meshAllParts}
+            onChange={e => setMeshAllParts(e.target.checked)}
+            className="w-3.5 h-3.5 rounded border border-border"
+          />
+          <span>Mesh all parts</span>
+        </label>
+        <button
+          onClick={() => onSetStep('dwpose')}
+          className="px-2 py-1 text-xs rounded border border-primary/50 text-primary hover:bg-primary/10 transition-colors flex items-center gap-1.5"
+        >
+          <Scissors size={12} />
+          AI Auto-Rig (DWPose)
+        </button>
         <button
           onClick={onBack}
           className="px-2 py-1 text-xs rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
@@ -537,10 +513,11 @@ export default function PsdImportWizard({
           ← Back
         </button>
         <button
-          onClick={onComplete}
-          className="px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors font-medium"
+          onClick={() => onComplete(meshAllParts)}
+          className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-all font-bold
+                     shadow-lg shadow-primary/25 ring-1 ring-primary/50 animate-in zoom-in-95 duration-700 delay-300 fill-mode-both"
         >
-          Finish
+          Finish Setup
         </button>
       </div>
     );

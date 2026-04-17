@@ -8,7 +8,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { saveProject } from '@/io/projectFile';
 import { saveToDb } from '@/io/projectDb';
 import { Loader2, Download, Library, AlertTriangle } from 'lucide-react';
@@ -135,20 +135,18 @@ export function SaveModal({
                   </div>
                 </div>
 
-                <RadioGroup value={saveMode} onValueChange={setSaveMode} className="flex gap-6 mt-1">
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="library" id="save-library" />
-                    <Label htmlFor="save-library" className="text-sm cursor-pointer flex items-center gap-1.5 font-medium">
-                      <Library className="h-4 w-4" /> Save to Library
-                    </Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="download" id="save-download" />
-                    <Label htmlFor="save-download" className="text-sm cursor-pointer flex items-center gap-1.5 font-medium">
-                      <Download className="h-4 w-4" /> Download File
-                    </Label>
-                  </div>
-                </RadioGroup>
+                <Tabs value={saveMode} onValueChange={setSaveMode} className="w-full">
+                  <TabsList className="grid w-full grid-cols-2 h-12">
+                    <TabsTrigger value="library" className="flex items-center gap-2 text-sm font-medium h-10">
+                      <Library className="h-4 w-4" />
+                      Save to Library
+                    </TabsTrigger>
+                    <TabsTrigger value="download" className="flex items-center gap-2 text-sm font-medium h-10">
+                      <Download className="h-4 w-4" />
+                      Download File
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
               </div>
             </div>
 

@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { computeWorldMatrices, mat3Inverse, mat3Identity } from '@/renderer/transforms';
 import { retriangulate } from '@/mesh/generate';
+import { applyPuppetWarp } from '@/mesh/puppetWarp';
 import { GizmoOverlay } from '@/components/canvas/GizmoOverlay';
 import { saveProject, loadProject } from '@/io/projectFile';
 
@@ -109,6 +110,23 @@ function basename(filename) {
   return filename.replace(/\.[^.]+$/, '');
 }
 
+/** Compute smart mesh options based on part surface area */
+function computeSmartMeshOpts(imageBounds) {
+  if (!imageBounds) {
+    return { alphaThreshold: 5, smoothPasses: 0, gridSpacing: 30, edgePadding: 8, numEdgePoints: 80 };
+  }
+  const w = imageBounds.maxX - imageBounds.minX;
+  const h = imageBounds.maxY - imageBounds.minY;
+  const sqrtArea = Math.sqrt(w * h);
+  return {
+    alphaThreshold: 5,
+    smoothPasses: 0,
+    gridSpacing: Math.max(6, Math.min(80, Math.round(sqrtArea * 0.08))),
+    edgePadding: 8,
+    numEdgePoints: Math.max(12, Math.min(300, Math.round(sqrtArea * 0.4))),
+  };
+}
+
 /* ──────────────────────────────────────────────────────────────────────────
    Component
 ────────────────────────────────────────────────────────────────────────── */
@@ -131,12 +149,14 @@ export default function CanvasViewport({
   const fileInputRef = useRef(null);
 
   // PSD import wizard state
-  const [wizardStep, setWizardStep] = useState(null);  // null | 'choose' | 'dwpose' | 'adjust'
+  const wizardStep = useEditorStore(s => s.wizardStep);
+  const setWizardStep = useEditorStore(s => s.setWizardStep);
   const [wizardPsd, setWizardPsd] = useState(null);  // { psdW, psdH, layers, partIds }
   const [confirmWipeOpen, setConfirmWipeOpen] = useState(false);
-  const [pendingPsdFile, setPendingPsdFile] = useState(null);
+  const [pendingFile, setPendingFile] = useState(null);
   const preImportSnapshotRef = useRef(null);  // project snapshot before finalizePsdImport
   const onnxSessionRef = useRef(null);  // cached ONNX session across imports
+  const meshAllPartsRef = useRef(false);  // whether to auto-mesh all parts on import completion
 
   const project = useProjectStore(s => s.project);
   const updateProject = useProjectStore(s => s.updateProject);
@@ -178,6 +198,20 @@ export default function CanvasViewport({
     });
     isDirtyRef.current = true;
   }, [setView]);
+
+  // Auto-center view when entering the reorder or adjust steps
+  useEffect(() => {
+    if (wizardStep === 'reorder' || wizardStep === 'adjust') {
+      const { psdW, psdH } = wizardPsd || {};
+      if (psdW && psdH) {
+        // Wait a tick for sidebars to appear/animate before centering
+        const timer = setTimeout(() => {
+          centerView(psdW, psdH);
+        }, 100);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [wizardStep, wizardPsd, centerView]);
 
   // Center view on initial mount
   useEffect(() => {
@@ -276,11 +310,39 @@ export default function CanvasViewport({
           if (!existing.mesh_verts) poseOverrides.set(node.id, { ...existing, mesh_verts: blendedVerts });
         }
 
-        sceneRef.current.draw(projectRef.current, editorRef.current, isDarkRef.current, poseOverrides);
+        // Apply puppet warp — deform mesh using MLS-rigid based on pin positions
+        for (const node of projectRef.current.nodes) {
+          if (node.type !== 'part' || !node.mesh || !node.puppetWarp?.enabled || !node.puppetWarp.pins.length) continue;
 
+          const draft = anim.draftPose.get(node.id);
+          const kfOv = poseOverrides?.get(node.id);
 
-        // Upload interpolated mesh vertices for parts with mesh_verts overrides,
-        // and restore base mesh for parts whose override was removed since last frame.
+          // Effective pins: draft > keyframe > base
+          // Keyframe values only store {id, x, y} — merge restX/restY from base pins
+          const basePins = node.puppetWarp.pins;
+          const rawPins = draft?.puppet_pins ?? kfOv?.puppet_pins ?? null;
+          const effectivePins = rawPins
+            ? rawPins.map(p => {
+                const base = basePins.find(b => b.id === p.id);
+                return { restX: base?.restX ?? p.x, restY: base?.restY ?? p.y, x: p.x, y: p.y };
+              })
+            : basePins;
+          if (!effectivePins.length) continue;
+
+          // Input vertices: already blended (from blend shapes above) or base mesh
+          const inputVerts = (kfOv?.mesh_verts ?? node.mesh.vertices).map(v => ({ x: v.x ?? v.restX, y: v.y ?? v.restY }));
+          const warpedVerts = applyPuppetWarp(inputVerts, effectivePins);
+
+          if (!poseOverrides) poseOverrides = new Map();
+          const existing = poseOverrides.get(node.id) ?? {};
+          poseOverrides.set(node.id, { ...existing, mesh_verts: warpedVerts });
+        }
+
+        // Upload mesh vertex overrides BEFORE drawing so the GPU buffers are
+        // current for this frame's draw call. Previously uploads happened after
+        // draw, causing a one-frame lag that made undo show the pre-undo mesh
+        // for one frame (visible as a flicker when selection changes triggered
+        // additional redraws).
         const newMeshOverridden = new Set();
         if (poseOverrides) {
           for (const [nodeId, ov] of poseOverrides) {
@@ -302,6 +364,8 @@ export default function CanvasViewport({
           }
         }
         meshOverriddenParts.current = newMeshOverridden;
+
+        sceneRef.current.draw(projectRef.current, editorRef.current, isDarkRef.current, poseOverrides);
 
         isDirtyRef.current = false;
       }
@@ -473,6 +537,32 @@ export default function CanvasViewport({
               upsertKeyframe(track.keyframes, currentTimeMs, value, 'linear');
             }
           }
+
+          // ── puppet_pins keyframe (puppet warp deformation) ──────────────────
+          if (node.type === 'part' && node.puppetWarp?.enabled) {
+            const hasPinDraft = draft?.puppet_pins !== undefined;
+            let pinTrack = animation.tracks.find(t => t.nodeId === nodeId && t.property === 'puppet_pins');
+
+            if (hasPinDraft || pinTrack) {
+              const pinValue = draft?.puppet_pins
+                ?? kfValues?.puppet_pins
+                ?? node.puppetWarp.pins.map(p => ({ id: p.id, x: p.x, y: p.y }));
+
+              const isNewPinTrack = !pinTrack;
+              if (!pinTrack) {
+                pinTrack = { nodeId, property: 'puppet_pins', keyframes: [] };
+                animation.tracks.push(pinTrack);
+
+                // Auto-insert rest-pose pin keyframe at startFrame
+                if (currentTimeMs > startMs) {
+                  const restPins = node.puppetWarp.pins.map(p => ({ id: p.id, x: p.restX, y: p.restY }));
+                  upsertKeyframe(pinTrack.keyframes, startMs, restPins, 'linear');
+                }
+              }
+
+              upsertKeyframe(pinTrack.keyframes, currentTimeMs, pinValue, 'linear');
+            }
+          }
         }
       });
 
@@ -602,6 +692,16 @@ export default function CanvasViewport({
   }, [dispatchMeshWorker]);
 
   useEffect(() => { if (remeshRef) remeshRef.current = remeshPart; }, [remeshRef, remeshPart]);
+
+  /* ── Auto-mesh all unmeshed parts with smart sizing ─────────────────────── */
+  const autoMeshAllParts = useCallback(() => {
+    const proj = projectRef.current;
+    const parts = proj.nodes.filter(n => n.type === 'part' && !n.mesh);
+    for (const node of parts) {
+      const opts = computeSmartMeshOpts(node.imageBounds);
+      remeshPart(node.id, opts);
+    }
+  }, [remeshPart]);
 
   /* ── Delete mesh for a part ──────────────────────────────────────────────── */
   const deleteMeshForPart = useCallback((partId) => {
@@ -771,31 +871,99 @@ export default function CanvasViewport({
   }, []);
 
   /* ── Wizard: finalize with rig (called by PsdImportWizard) ──────────────── */
-  const handleWizardFinalize = useCallback((groupDefs, assignments) => {
+  const handleWizardFinalize = useCallback((groupDefs, assignments, meshAllParts) => {
     const { psdW, psdH, layers, partIds } = wizardPsd;
     // Snapshot project state before modifying (supports Back from adjust step)
-    preImportSnapshotRef.current = JSON.stringify(useProjectStore.getState().project);
+    // Only snapshot if we don't already have one (e.g. from an earlier rig attempt)
+    if (!preImportSnapshotRef.current) {
+      preImportSnapshotRef.current = JSON.stringify(useProjectStore.getState().project);
+    }
     finalizePsdImport(psdW, psdH, layers, partIds, groupDefs, assignments);
+    meshAllPartsRef.current = meshAllParts;
     useEditorStore.getState().setShowSkeleton(true);
     useEditorStore.getState().setSkeletonEditMode(true);
     setWizardStep('adjust');
   }, [wizardPsd, finalizePsdImport]);
 
-  /* ── Wizard: skip rigging (called by PsdImportWizard) ──────────────────── */
-  const handleWizardSkip = useCallback(() => {
+  /* ── Wizard: enter reorder stage (finalize without rig) ────────────────── */
+  const handleWizardReorder = useCallback(() => {
     const { psdW, psdH, layers, partIds } = wizardPsd;
+    if (!preImportSnapshotRef.current) {
+      preImportSnapshotRef.current = JSON.stringify(useProjectStore.getState().project);
+    }
     finalizePsdImport(psdW, psdH, layers, partIds, [], null);
-    setWizardPsd(null);
-    setWizardStep(null);
+    setWizardStep('reorder');
   }, [wizardPsd, finalizePsdImport]);
 
+  /* ── Wizard: apply rig to existing part nodes ──────────────────────────── */
+  const handleWizardApplyRig = useCallback((groupDefs, assignments, meshAllParts) => {
+    updateProject((proj) => {
+      // 1. Create group nodes first
+      for (const g of groupDefs) {
+        proj.nodes.push({
+          id: g.id,
+          type: 'group',
+          name: g.name,
+          parent: g.parentId,
+          opacity: 1,
+          visible: true,
+          boneRole: g.boneRole ?? null,
+          transform: {
+            ...DEFAULT_TRANSFORM(),
+            pivotX: g.pivotX ?? 0,
+            pivotY: g.pivotY ?? 0,
+          },
+        });
+      }
+
+      // 2. Update existing part nodes with new parents and draw orders
+      assignments.forEach((assign, index) => {
+        const partId = wizardPsd.partIds[index];
+        const node = proj.nodes.find(n => n.id === partId);
+        if (node) {
+          node.parent = assign.parentGroupId;
+          node.draw_order = assign.drawOrder;
+        }
+      });
+    });
+
+    const setExpandedGroups = useEditorStore.getState().setExpandedGroups;
+    const setActiveLayerTab = useEditorStore.getState().setActiveLayerTab;
+    if (groupDefs.length > 0) {
+      setExpandedGroups(groupDefs.map(g => g.id));
+      setActiveLayerTab('groups');
+    }
+
+    meshAllPartsRef.current = meshAllParts;
+    useEditorStore.getState().setShowSkeleton(true);
+    useEditorStore.getState().setSkeletonEditMode(true);
+    setWizardStep('adjust');
+  }, [wizardPsd, updateProject]);
+
+  /* ── Wizard: skip rigging (called by PsdImportWizard) ──────────────────── */
+  const handleWizardSkip = useCallback((meshAllParts) => {
+    const { psdW, psdH, layers, partIds } = wizardPsd;
+    finalizePsdImport(psdW, psdH, layers, partIds, [], null);
+    if (meshAllParts) {
+      // Auto-mesh will happen asynchronously as textures are uploaded
+      // Schedule it after a short delay to let finalizePsdImport complete
+      setTimeout(() => autoMeshAllParts(), 100);
+    }
+    setWizardPsd(null);
+    setWizardStep(null);
+  }, [wizardPsd, finalizePsdImport, autoMeshAllParts]);
+
   /* ── Wizard: complete (called by PsdImportWizard adjust step) ──────────── */
-  const handleWizardComplete = useCallback(() => {
+  const handleWizardComplete = useCallback((meshAllParts) => {
+    if (meshAllParts ?? meshAllPartsRef.current) {
+      // Auto-mesh all unmeshed parts with smart sizing
+      autoMeshAllParts();
+    }
     setWizardStep(null);
     setWizardPsd(null);
     useEditorStore.getState().setSkeletonEditMode(false);
     preImportSnapshotRef.current = null;
-  }, []);
+  }, [autoMeshAllParts]);
 
   /* ── Wizard: back from adjust (revert to snapshot, reopen wizard) ──────── */
   const handleWizardBack = useCallback(() => {
@@ -805,7 +973,7 @@ export default function CanvasViewport({
     }
     useEditorStore.getState().setSkeletonEditMode(false);
     useEditorStore.getState().setShowSkeleton(false);
-    setWizardStep('choose');
+    setWizardStep('review');
   }, []);
 
 
@@ -828,6 +996,82 @@ export default function CanvasViewport({
       return { ...prev, layers: newLayers, partIds: newPartIds };
     });
   }, []);
+
+  /* ── Save/Load project ────────────────────────────────────────────────── */
+  const handleSave = useCallback(async () => {
+    try {
+      const blob = await saveProject(projectRef.current);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'project.stretch';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to save project:', err);
+    }
+  }, []);
+
+  useEffect(() => { if (saveRef) saveRef.current = handleSave; }, [saveRef, handleSave]);
+
+  const handleLoadProject = useCallback(async (file) => {
+    if (!file) return;
+    try {
+      const { project: loadedProject, images } = await loadProject(file);
+
+      // Destroy all GPU resources
+      if (sceneRef.current) {
+        sceneRef.current.parts.destroyAll();
+      }
+
+      // Load project into store
+      useProjectStore.getState().loadProject(loadedProject);
+
+      // Rebuild imageDataMapRef from loaded textures
+      imageDataMapRef.current.clear();
+      for (const [partId, img] of images) {
+        const off = document.createElement('canvas');
+        off.width = img.width;
+        off.height = img.height;
+        const ctx = off.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, img.width, img.height);
+        imageDataMapRef.current.set(partId, imageData);
+      }
+
+      // Re-upload to GPU
+      for (const node of loadedProject.nodes) {
+        if (node.type !== 'part') continue;
+        if (images.has(node.id)) {
+          sceneRef.current?.parts.uploadTexture(node.id, images.get(node.id));
+        }
+        if (node.mesh) {
+          sceneRef.current?.parts.uploadMesh(node.id, node.mesh);
+        } else if (node.imageWidth && node.imageHeight) {
+          sceneRef.current?.parts.uploadQuadFallback(node.id, node.imageWidth, node.imageHeight);
+        }
+      }
+
+      // Reset animation playback state
+      useAnimationStore.getState().resetPlayback?.();
+
+      // Reset editor selection
+      useEditorStore.getState().setSelection([]);
+
+      isDirtyRef.current = true;
+
+      // Center the loaded project view
+      const cw = loadedProject.canvas?.width || 800;
+      const ch = loadedProject.canvas?.height || 600;
+      centerView(cw, ch);
+    } catch (err) {
+      console.error('Failed to load project:', err);
+    }
+  }, [centerView]);
+
+  useEffect(() => {
+    if (loadRef) loadRef.current = handleLoadProject;
+  }, [loadRef, handleLoadProject]);
 
   /* ── PSD import helper ───────────────────────────────────────────────── */
   const processPsdFile = useCallback((file) => {
@@ -854,22 +1098,38 @@ export default function CanvasViewport({
   const importPsdFile = useCallback((file) => {
     const proj = projectRef.current;
     if (proj.nodes.length > 0) {
-      setPendingPsdFile(file);
+      setPendingFile(file);
       setConfirmWipeOpen(true);
     } else {
       processPsdFile(file);
     }
   }, [processPsdFile]);
 
+  const importStretchFile = useCallback((file) => {
+    const proj = projectRef.current;
+    if (proj.nodes.length > 0) {
+      setPendingFile(file);
+      setConfirmWipeOpen(true);
+    } else {
+      handleLoadProject(file);
+    }
+  }, [handleLoadProject]);
+
   const handleConfirmWipe = useCallback(() => {
-    if (pendingPsdFile) {
+    if (pendingFile) {
+      const isStretch = pendingFile.name.toLowerCase().endsWith('.stretch');
       resetProject();
       animRef.current.resetPlayback();
-      processPsdFile(pendingPsdFile);
-      setPendingPsdFile(null);
+
+      if (isStretch) {
+        handleLoadProject(pendingFile);
+      } else {
+        processPsdFile(pendingFile);
+      }
+      setPendingFile(null);
     }
     setConfirmWipeOpen(false);
-  }, [pendingPsdFile, processPsdFile, resetProject, centerView]);
+  }, [pendingFile, processPsdFile, handleLoadProject, resetProject]);
 
   /* ── Drag-and-drop ───────────────────────────────────────────────────── */
   const onDrop = useCallback((e) => {
@@ -877,12 +1137,14 @@ export default function CanvasViewport({
     const file = e.dataTransfer.files[0];
     if (!file) return;
 
-    if (file.name.toLowerCase().endsWith('.psd')) {
+    if (file.name.toLowerCase().endsWith('.stretch')) {
+      importStretchFile(file);
+    } else if (file.name.toLowerCase().endsWith('.psd')) {
       importPsdFile(file);
     } else if (file.type.startsWith('image/')) {
       importPng(file);
     }
-  }, [importPng, importPsdFile]);
+  }, [importPng, importPsdFile, importStretchFile]);
 
   const onDragOver = useCallback((e) => { e.preventDefault(); }, []);
 
@@ -1353,82 +1615,6 @@ export default function CanvasViewport({
     }
   }, []);
 
-  /* ── Save/Load project ────────────────────────────────────────────────── */
-  const handleSave = useCallback(async () => {
-    try {
-      const blob = await saveProject(projectRef.current);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'project.stretch';
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      console.error('Failed to save project:', err);
-    }
-  }, []);
-
-  useEffect(() => { if (saveRef) saveRef.current = handleSave; }, [saveRef, handleSave]);
-
-  const handleLoadProject = useCallback(async (file) => {
-    if (!file) return;
-    try {
-      const { project: loadedProject, images } = await loadProject(file);
-
-      // Destroy all GPU resources
-      if (sceneRef.current) {
-        sceneRef.current.parts.destroyAll();
-      }
-
-      // Load project into store
-      useProjectStore.getState().loadProject(loadedProject);
-
-      // Rebuild imageDataMapRef from loaded textures
-      imageDataMapRef.current.clear();
-      for (const [partId, img] of images) {
-        const off = document.createElement('canvas');
-        off.width = img.width;
-        off.height = img.height;
-        const ctx = off.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        const imageData = ctx.getImageData(0, 0, img.width, img.height);
-        imageDataMapRef.current.set(partId, imageData);
-      }
-
-      // Re-upload to GPU
-      for (const node of loadedProject.nodes) {
-        if (node.type !== 'part') continue;
-        if (images.has(node.id)) {
-          sceneRef.current?.parts.uploadTexture(node.id, images.get(node.id));
-        }
-        if (node.mesh) {
-          sceneRef.current?.parts.uploadMesh(node.id, node.mesh);
-        } else if (node.imageWidth && node.imageHeight) {
-          sceneRef.current?.parts.uploadQuadFallback(node.id, node.imageWidth, node.imageHeight);
-        }
-      }
-
-      // Reset animation playback state
-      useAnimationStore.getState().resetPlayback?.();
-
-      // Reset editor selection
-      useEditorStore.getState().setSelection([]);
-
-      isDirtyRef.current = true;
-
-      // Center the loaded project view
-      const cw = loadedProject.canvas?.width || 800;
-      const ch = loadedProject.canvas?.height || 600;
-      centerView(cw, ch);
-    } catch (err) {
-      console.error('Failed to load project:', err);
-    }
-  }, [centerView]);
-
-  useEffect(() => {
-    if (loadRef) loadRef.current = handleLoadProject;
-  }, [loadRef, handleLoadProject]);
-
   /* ── File Upload Handlers ───────────────────────────────────────────── */
   const handlePanelClick = useCallback(() => {
     fileInputRef.current?.click();
@@ -1439,7 +1625,7 @@ export default function CanvasViewport({
     if (!file) return;
 
     if (file.name.toLowerCase().endsWith('.stretch')) {
-      handleLoadProject(file);
+      importStretchFile(file);
     } else if (file.name.toLowerCase().endsWith('.psd')) {
       importPsdFile(file);
     } else if (file.type.startsWith('image/')) {
@@ -1448,7 +1634,7 @@ export default function CanvasViewport({
 
     // Clear input so same file can be uploaded again if needed
     e.target.value = '';
-  }, [handleLoadProject, importPsdFile, importPng]);
+  }, [importStretchFile, importPsdFile, importPng]);
 
   /**
    * Reset the current project to empty state.
@@ -1509,6 +1695,7 @@ export default function CanvasViewport({
     exportWidth, exportHeight,
     format = 'png', quality = 0.92,
     cropOffset = null,
+    loopKeyframes = false,
   }) => {
     const canvas = canvasRef.current;
     const scene = sceneRef.current;
@@ -1543,7 +1730,70 @@ export default function CanvasViewport({
     let poseOverrides = null;
     if (animId) {
       const anim = exportProject.animations.find(a => a.id === animId);
-      if (anim) poseOverrides = computePoseOverrides(anim, timeMs, false, anim.duration ?? 0);
+      if (anim) {
+        poseOverrides = computePoseOverrides(anim, timeMs, loopKeyframes, anim.duration ?? 0);
+
+        // Compute mesh deformations (blend shapes + puppet warp) for export frame
+        for (const node of exportProject.nodes) {
+          if (node.type !== 'part' || !node.mesh) continue;
+
+          let currentMeshVerts = null;
+
+          // 1. Blend shapes
+          if (node.blendShapes?.length) {
+            const influences = node.blendShapes.map(shape => {
+              const prop = `blendShape:${shape.id}`;
+              return poseOverrides.get(node.id)?.[prop] ?? node.blendShapeValues?.[shape.id] ?? 0;
+            });
+            if (influences.some(v => v !== 0)) {
+              currentMeshVerts = node.mesh.vertices.map((v, i) => {
+                let bx = v.restX, by = v.restY;
+                for (let j = 0; j < node.blendShapes.length; j++) {
+                  const d = node.blendShapes[j].deltas[i];
+                  if (d) { bx += d.dx * influences[j]; by += d.dy * influences[j]; }
+                }
+                return { x: bx, y: by };
+              });
+            }
+          }
+
+          // 2. Puppet warp (applied on top of blended vertices if they exist)
+          if (node.puppetWarp?.enabled && node.puppetWarp.pins.length) {
+            const kfOv = poseOverrides.get(node.id);
+            const basePins = node.puppetWarp.pins;
+            const rawPins = kfOv?.puppet_pins ?? null;
+            const effectivePins = rawPins
+              ? rawPins.map(p => {
+                const base = basePins.find(b => b.id === p.id);
+                return { restX: base?.restX ?? p.x, restY: base?.restY ?? p.y, x: p.x, y: p.y };
+              })
+              : basePins;
+
+            if (effectivePins.length) {
+              const inputVerts = (currentMeshVerts ?? node.mesh.vertices).map(v => ({ x: v.x ?? v.restX, y: v.y ?? v.restY }));
+              currentMeshVerts = applyPuppetWarp(inputVerts, effectivePins);
+            }
+          }
+
+          if (currentMeshVerts) {
+            const existing = poseOverrides.get(node.id) ?? {};
+            poseOverrides.set(node.id, { ...existing, mesh_verts: currentMeshVerts });
+          }
+        }
+      }
+    }
+
+    // Upload deformed mesh vertices to GPU before rendering
+    const exportMeshOverridden = [];
+    if (poseOverrides) {
+      for (const [nodeId, ov] of poseOverrides) {
+        if (!ov.mesh_verts) continue;
+        const node = exportProject.nodes.find(n => n.id === nodeId);
+        if (node?.mesh) {
+          scene.parts.uploadPositions(nodeId, ov.mesh_verts, new Float32Array(node.mesh.uvs));
+          exportMeshOverridden.push(nodeId);
+        }
+      }
     }
 
     // Render with export flags
@@ -1565,6 +1815,14 @@ export default function CanvasViewport({
       dataUrl = off.toDataURL(mimeType, quality);
     } else {
       dataUrl = canvas.toDataURL(mimeType, quality);
+    }
+
+    // Restore original mesh positions after capture is complete
+    for (const nodeId of exportMeshOverridden) {
+      const node = exportProject.nodes.find(n => n.id === nodeId);
+      if (node?.mesh) {
+        scene.parts.uploadPositions(nodeId, node.mesh.vertices, new Float32Array(node.mesh.uvs));
+      }
     }
 
     // Mark dirty for rAF to restore canvas size via resize guard
@@ -1709,6 +1967,8 @@ export default function CanvasViewport({
           onComplete={handleWizardComplete}
           onBack={handleWizardBack}
           onSplitArms={handleWizardSplitArms}
+          onReorder={handleWizardReorder}
+          onApplyRig={handleWizardApplyRig}
         />
       )}
 
@@ -1718,7 +1978,7 @@ export default function CanvasViewport({
           <AlertDialogHeader>
             <AlertDialogTitle>Wipe current project?</AlertDialogTitle>
             <AlertDialogDescription>
-              Importing a new PSD will permanently delete all existing layers,
+              Importing a new project or PSD will permanently delete all existing layers,
               meshes, and animations in your current project. This action
               cannot be undone.
             </AlertDialogDescription>
@@ -1726,7 +1986,7 @@ export default function CanvasViewport({
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleConfirmWipe} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              Wipe & Import
+              Wipe & Load
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

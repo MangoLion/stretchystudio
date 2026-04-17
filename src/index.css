@@ -77,3 +77,13 @@
   animation: blink-red 1s infinite;
   @apply bg-red-600 text-white !important;
 }
+
+@keyframes shimmer-sweep {
+  0% { transform: translateX(-100%); }
+  70% { transform: translateX(400%); }
+  100% { transform: translateX(400%); }
+}
+
+.animate-shimmer {
+  animation: shimmer-sweep 3s infinite ease-in-out;
+}

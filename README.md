@@ -38,10 +38,13 @@ Rigging doesn't have to be a chore. Use **AI-powered pose detection** (DWPose) t
 ### 🎬 Organic "Stretchy" Motion
 Don't just rotate layers—warp them! Animate individual mesh vertices to create organic, fluid motion. Perfect for breathing effects, flowing hair, and those subtle "Live2D-style" micro-expressions.
 
+### 🎯 Puppet Warp
+Place control pins on any layer and drag them to deform the mesh intuitively. Unmoved pins act as anchors to keep other regions in place. Perfect for eyebrow raises, mouth shapes, and subtle character movements without touching individual vertices. Puppet pins are fully keyframeable and work seamlessly with blend shapes.
+
 ### 🔦 Some other features you may like
 - **Automatic Eye Clipping**: Irises stay perfectly contained within the eyes—no complex masking required.
 - **Realistic Limb Bending**: Built-in vertex skinning for arms and legs so they bend exactly how they should.
-- **Blender-Style Shape Keys**: Create complex deformations (like smiles or blinks) once and blend them anyway you like via influence sliders.
+- **Blender-Style Shape Keys**: Create complex deformations (like smiles or blinks) once and blend them anyway you like via influence sliders. Record puppet pin movements into shape keys for advanced blend-based deformation.
 - **Synced Audio Tracks**: Layer background music and SFX directly in the timeline. Trim, position, and sync audio clips with your animations for a complete multimedia experience.
 - **Spine 4.0 Export**: Export your rigs and animations directly to Spine JSON format for use in game engines and professional production pipelines.
 
@@ -50,8 +53,8 @@ Don't just rotate layers—warp them! Animate individual mesh vertices to create
 ## 🚀 Quick Start
 
 1. **Open the App**: Head to [editor.stretchy.studio](https://editor.stretchy.studio).
-2. **Drop your Art**: Drag a PSD or PNG file into the workspace.
-3. **Auto-Rig**: Follow the 3-step wizard to setup your character skeleton.
+2. **Drop your Art**: Drag a `.stretch` project, PSD, or PNG file into the workspace.
+3. **Auto-Rig**: Follow the streamlined setup wizard to map layers and establish your character skeleton.
 4. **Animate**: Switch to **Animation mode** and start creating keyframes!
 
 ---
