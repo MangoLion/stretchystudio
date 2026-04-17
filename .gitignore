@@ -46,3 +46,6 @@ docs/live2d-export/sessions/
 *.stretch
 *.cmo3
 __pycache__/
+
+# Local dev scripts (platform-specific)
+_start.bat
