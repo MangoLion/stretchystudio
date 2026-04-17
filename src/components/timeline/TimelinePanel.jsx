@@ -2,6 +2,7 @@ import React, { useRef, useCallback, useEffect, useState, useMemo } from 'react'
 import { useAnimationStore } from '@/store/animationStore';
 import { useProjectStore } from '@/store/projectStore';
 import { useEditorStore } from '@/store/editorStore';
+import { beginBatch, endBatch } from '@/store/undoHistory';
 import { cn } from '@/lib/utils';
 import { Disc, RotateCcw, Repeat, SkipBack, SkipForward, Copy, Clipboard, Trash2, Music, X, Settings } from 'lucide-react';
 import {
@@ -460,6 +461,7 @@ function AudioTrackRow({
     if (!track.sourceUrl) return;
     e.stopPropagation(); // Prevent playhead seeking
     setDraggingHandle('left');
+    beginBatch(useProjectStore.getState().project);
 
     const startX = e.clientX;
     const startFrame = xToFrame(startX);
@@ -483,10 +485,11 @@ function AudioTrackRow({
             t.timelineStartMs = origTimelineStart + clampedDelta;
           }
         }
-      });
+      }, { skipHistory: true });
     };
 
     const handleUp = () => {
+      endBatch();
       setDraggingHandle(null);
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
@@ -500,6 +503,7 @@ function AudioTrackRow({
     if (!track.sourceUrl) return;
     e.stopPropagation(); // Prevent playhead seeking
     setDraggingHandle('right');
+    beginBatch(useProjectStore.getState().project);
 
     const startX = e.clientX;
     const startFrame = xToFrame(startX);
@@ -522,10 +526,11 @@ function AudioTrackRow({
             t.audioEndMs = clampedEnd;
           }
         }
-      });
+      }, { skipHistory: true });
     };
 
     const handleUp = () => {
+      endBatch();
       setDraggingHandle(null);
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
@@ -539,6 +544,7 @@ function AudioTrackRow({
     if (!track.sourceUrl) return;
     e.stopPropagation(); // Prevent playhead seeking
     setDraggingHandle('body');
+    beginBatch(useProjectStore.getState().project);
 
     const startX = e.clientX;
     const startFrame = xToFrame(startX);
@@ -557,10 +563,11 @@ function AudioTrackRow({
             t.timelineStartMs = Math.max(0, origStart + deltaMs);
           }
         }
-      });
+      }, { skipHistory: true });
     };
 
     const handleUp = () => {
+      endBatch();
       setDraggingHandle(null);
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
@@ -826,6 +833,8 @@ export function TimelinePanel() {
       origKeyframes: orig,
     };
 
+    beginBatch(useProjectStore.getState().project);
+
     const handleMove = (ev) => {
       const dragFrameDelta = xToFrame(ev.clientX) - dragCtx.current.startFrame;
       if (dragFrameDelta !== 0) {
@@ -846,7 +855,7 @@ export function TimelinePanel() {
           }
           // Sort tracks by time to ensure play engine doesn't trip up
           a.tracks.forEach(t => t.keyframes.sort((k1, k2) => k1.time - k2.time));
-        });
+        }, { skipHistory: true });
 
         // Update selection to match new times
         if (nextSel.size > 0) {
@@ -861,6 +870,7 @@ export function TimelinePanel() {
     };
 
     const handleUp = () => {
+      endBatch();
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
       dragCtx.current.type = null;

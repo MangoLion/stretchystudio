@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { produce } from 'immer';
+import { pushSnapshot, isBatching, clearHistory } from '@/store/undoHistory';
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
@@ -66,10 +67,16 @@ export const useProjectStore = create((set) => ({
 
   // ── Actions ────────────────────────────────────────────────────────────────
 
-  /** Generic immer recipe — use for all undoable project edits */
-  updateProject: (recipe) => set(produce((state) => {
-    recipe(state.project, state.versionControl);
-  })),
+  /** Generic immer recipe — use for all undoable project edits.
+   *  Auto-snapshots before mutation unless { skipHistory: true } is passed. */
+  updateProject: (recipe, { skipHistory = false } = {}) => set((state) => {
+    if (!skipHistory && !isBatching()) {
+      pushSnapshot(state.project);
+    }
+    return produce((state) => {
+      recipe(state.project, state.versionControl);
+    })(state);
+  }),
 
   /** Create a new empty group node */
   createGroup: (name) => set(produce((state) => {
@@ -165,41 +172,47 @@ export const useProjectStore = create((set) => ({
   })),
 
   /** Reset project to empty state */
-  resetProject: () => set(produce((state) => {
-    state.project.canvas   = { width: 800, height: 600, x: 0, y: 0, bgEnabled: false, bgColor: '#ffffff' };
-    state.project.textures = [];
-    state.project.nodes    = [];
-    state.project.parameters = [];
-    state.project.physics_groups = [];
-    state.project.animations = [];
-    state.versionControl.geometryVersion++;
-    state.versionControl.transformVersion++;
-    state.versionControl.textureVersion++;
-  })),
+  resetProject: () => {
+    clearHistory();
+    return set(produce((state) => {
+      state.project.canvas   = { width: 800, height: 600, x: 0, y: 0, bgEnabled: false, bgColor: '#ffffff' };
+      state.project.textures = [];
+      state.project.nodes    = [];
+      state.project.parameters = [];
+      state.project.physics_groups = [];
+      state.project.animations = [];
+      state.versionControl.geometryVersion++;
+      state.versionControl.transformVersion++;
+      state.versionControl.textureVersion++;
+    }));
+  },
 
   /** Load a deserialized project from file */
-  loadProject: (projectData) => set(produce((state) => {
-    state.project.version = projectData.version;
-    state.project.canvas = {
-      width: 800, height: 600, x: 0, y: 0, bgEnabled: false, bgColor: '#ffffff',
-      ...projectData.canvas,
-    };
-    state.project.textures = projectData.textures;
-    // Ensure blend shapes fields exist on all nodes (forward-compat with old files)
-    const nodes = projectData.nodes ?? [];
-    for (const node of nodes) {
-      if (node.blendShapes === undefined) node.blendShapes = [];
-      if (node.blendShapeValues === undefined) node.blendShapeValues = {};
-      if (node.puppetWarp === undefined) node.puppetWarp = null;
-    }
-    state.project.nodes = nodes;
-    state.project.animations = projectData.animations ?? [];
-    state.project.parameters = projectData.parameters ?? [];
-    state.project.physics_groups = projectData.physics_groups ?? [];
-    state.versionControl.geometryVersion++;
-    state.versionControl.transformVersion++;
-    state.versionControl.textureVersion++;
-  })),
+  loadProject: (projectData) => {
+    clearHistory();
+    return set(produce((state) => {
+      state.project.version = projectData.version;
+      state.project.canvas = {
+        width: 800, height: 600, x: 0, y: 0, bgEnabled: false, bgColor: '#ffffff',
+        ...projectData.canvas,
+      };
+      state.project.textures = projectData.textures;
+      // Ensure blend shapes fields exist on all nodes (forward-compat with old files)
+      const nodes = projectData.nodes ?? [];
+      for (const node of nodes) {
+        if (node.blendShapes === undefined) node.blendShapes = [];
+        if (node.blendShapeValues === undefined) node.blendShapeValues = {};
+        if (node.puppetWarp === undefined) node.puppetWarp = null;
+      }
+      state.project.nodes = nodes;
+      state.project.animations = projectData.animations ?? [];
+      state.project.parameters = projectData.parameters ?? [];
+      state.project.physics_groups = projectData.physics_groups ?? [];
+      state.versionControl.geometryVersion++;
+      state.versionControl.transformVersion++;
+      state.versionControl.textureVersion++;
+    }));
+  },
 
   /** Update canvas properties */
   updateCanvas: (partial) => set(produce((state) => {

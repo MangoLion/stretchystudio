@@ -1,23 +1,12 @@
 /**
  * useUndoRedo — global keyboard handler for Ctrl+Z / Ctrl+Y.
  *
- * For M1, we implement a simple snapshot-based undo using full project clones.
- * (Immer patch-based undo is cleaner but more involved; snapshot is sufficient for M1.)
+ * Snapshot-based undo using full project clones.
+ * History management delegated to undoHistory.js.
  */
 import { useEffect, useRef } from 'react';
 import { useProjectStore } from '@/store/projectStore';
-
-const MAX_HISTORY = 50;
-
-let _snapshots = [];     // past project snapshots
-let _redoStack  = [];    // redo stack
-
-/** Call after every user-driven mutation to push a snapshot. */
-export function pushSnapshot(project) {
-  _snapshots.push(JSON.parse(JSON.stringify(project)));
-  if (_snapshots.length > MAX_HISTORY) _snapshots.shift();
-  _redoStack = [];
-}
+import { undo, redo } from '@/store/undoHistory';
 
 export function useUndoRedo() {
   const updateProject = useProjectStore(s => s.updateProject);
@@ -39,25 +28,19 @@ export function useUndoRedo() {
 
       if (isZ && !e.shiftKey) {
         // Undo
-        if (_snapshots.length === 0) return;
         e.preventDefault();
-        const prev = _snapshots.pop();
-        if (projectRef.current) {
-          _redoStack.push(JSON.parse(JSON.stringify(projectRef.current)));
-        }
-        updateProject((proj) => {
-          Object.assign(proj, prev);
+        undo(projectRef.current, (snapshot) => {
+          updateProject((proj) => {
+            Object.assign(proj, snapshot);
+          }, { skipHistory: true });
         });
       } else if (isY || (isZ && e.shiftKey)) {
         // Redo
-        if (_redoStack.length === 0) return;
         e.preventDefault();
-        const next = _redoStack.pop();
-        if (projectRef.current) {
-          _snapshots.push(JSON.parse(JSON.stringify(projectRef.current)));
-        }
-        updateProject((proj) => {
-          Object.assign(proj, next);
+        redo(projectRef.current, (snapshot) => {
+          updateProject((proj) => {
+            Object.assign(proj, snapshot);
+          }, { skipHistory: true });
         });
       }
     };

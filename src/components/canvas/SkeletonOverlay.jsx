@@ -20,6 +20,7 @@ import { computeWorldMatrices, mat3Identity, mat3Inverse } from '@/renderer/tran
 import { computePoseOverrides } from '@/renderer/animationEngine';
 import { applyPuppetWarp } from '@/mesh/puppetWarp';
 import { useToast } from '@/hooks/use-toast';
+import { beginBatch, endBatch } from '@/store/undoHistory';
 
 // Colour palette
 const COLOUR_NORMAL = '#ef4444';      // red — not in edit mode
@@ -204,6 +205,11 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
       };
 
       setSelection([nodeId]);
+
+      // Begin batch for staging mode or blend shape edit mode (both update project)
+      if (!dragRef.current.isAnimMode) {
+        beginBatch(useProjectStore.getState().project);
+      }
     } else if (dragType === 'joint') {
       // Joint drag — only active in skeleton edit mode
       if (!skeletonEditMode) return;
@@ -241,6 +247,10 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
       };
 
       setSelection([nodeId]);
+
+      if (editorModeRef.current === 'staging') {
+        beginBatch(useProjectStore.getState().project);
+      }
 
       const dx = cssX - tpx;
       const dy = cssY - tpy;
@@ -334,6 +344,10 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
 
       // Select the bone so GizmoOverlay appears
       setSelection([nodeId]);
+
+      if (editorModeRef.current === 'staging') {
+        beginBatch(useProjectStore.getState().project);
+      }
     }
   }, [skeletonEditMode, puppetPinEditMode, effectiveNodes, setSelection, animations, animActiveAnimationId, animCurrentTime, animDraftPose]);
 
@@ -356,7 +370,7 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
           node.transform.pivotX = imgX;
           node.transform.pivotY = imgY;
         }
-      });
+      }, { skipHistory: true });
     } else if (drag.type === 'rotate') {
       // Rotation arc drag
       const cssX = e.clientX - rect.left;
@@ -377,7 +391,7 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
           if (!node) return;
           if (!node.transform) node.transform = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
           node.transform.rotation = drag.startRotation + delta;
-        });
+        }, { skipHistory: true });
       }
       
       // Apply JS vertex skinning if there are dependent parts.
@@ -435,7 +449,7 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
            if (!pn.transform) pn.transform = { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, pivotX: 0, pivotY: 0 };
            pn.transform.x = newX;
            pn.transform.y = newY;
-         });
+         }, { skipHistory: true });
       }
     } else if (drag.type === 'puppetPin') {
       const { zoom, panX, panY } = viewRef.current;
@@ -491,7 +505,7 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
             dx: warpedVerts[i].x - v.restX,
             dy: warpedVerts[i].y - v.restY,
           }));
-        });
+        }, { skipHistory: true });
         return;
       } else if (drag.isAnimMode) {
         // Animation mode: write to draftPose
@@ -513,7 +527,7 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
           const node = proj.nodes.find(n => n.id === drag.partId);
           const pin = node?.puppetWarp?.pins?.find(p => p.id === drag.pinId);
           if (pin) { pin.x = newX; pin.y = newY; }
-        });
+        }, { skipHistory: true });
       }
     }
   }, [updateProject, effectiveNodes, animDraftPose, keyframeOverrides]);
@@ -522,6 +536,7 @@ export default function SkeletonOverlay({ view, editorMode, showSkeleton, skelet
   useEffect(() => { clearDraftPoseForNodeRef.current = clearDraftPoseForNode; }, [clearDraftPoseForNode]);
 
   const onPointerUp = useCallback(() => {
+    endBatch();
     const drag = dragRef.current;
     dragRef.current = null;
 

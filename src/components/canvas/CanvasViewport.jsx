@@ -338,11 +338,11 @@ export default function CanvasViewport({
           poseOverrides.set(node.id, { ...existing, mesh_verts: warpedVerts });
         }
 
-        sceneRef.current.draw(projectRef.current, editorRef.current, isDarkRef.current, poseOverrides);
-
-
-        // Upload interpolated mesh vertices for parts with mesh_verts overrides,
-        // and restore base mesh for parts whose override was removed since last frame.
+        // Upload mesh vertex overrides BEFORE drawing so the GPU buffers are
+        // current for this frame's draw call. Previously uploads happened after
+        // draw, causing a one-frame lag that made undo show the pre-undo mesh
+        // for one frame (visible as a flicker when selection changes triggered
+        // additional redraws).
         const newMeshOverridden = new Set();
         if (poseOverrides) {
           for (const [nodeId, ov] of poseOverrides) {
@@ -364,6 +364,8 @@ export default function CanvasViewport({
           }
         }
         meshOverriddenParts.current = newMeshOverridden;
+
+        sceneRef.current.draw(projectRef.current, editorRef.current, isDarkRef.current, poseOverrides);
 
         isDirtyRef.current = false;
       }

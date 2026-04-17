@@ -12,6 +12,7 @@ import { useEditorStore } from '@/store/editorStore';
 import { useProjectStore } from '@/store/projectStore';
 import { useAnimationStore } from '@/store/animationStore';
 import { computePoseOverrides } from '@/renderer/animationEngine';
+import { beginBatch, endBatch } from '@/store/undoHistory';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -54,8 +55,15 @@ function Row({ label, children }) {
 
 
 function SliderRow({ label, value, min, max, step = 1, onChange, help }) {
+  const onPointerDown = () => {
+    beginBatch(useProjectStore.getState().project);
+  };
+  const onPointerUp = () => {
+    endBatch();
+  };
+
   return (
-    <div className="space-y-1 py-0.5">
+    <div className="space-y-1 py-0.5" onPointerDown={onPointerDown} onPointerUp={onPointerUp}>
       <div className="flex justify-between items-center gap-1">
         <div className="flex items-center gap-1">
           <Label className="text-xs text-muted-foreground">{label}</Label>
