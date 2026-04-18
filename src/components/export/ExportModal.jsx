@@ -104,9 +104,11 @@ export function ExportModal({ open, onClose, captureRef }) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        // If project has animations, export is a ZIP with .cmo3 + .can3
+        // Exporter bundles as ZIP when animations OR rig debug log are present.
+        // Detect via MIME type: zips come back as application/zip, bare .cmo3 as octet-stream.
+        const isZip = blob.type === 'application/zip' || blob.type === 'application/x-zip-compressed';
         const hasAnims = project.animations?.length > 0;
-        a.download = hasAnims ? `${name}_live2d.zip` : `${name}.cmo3`;
+        a.download = (isZip || hasAnims || generateRig) ? `${name}_live2d.zip` : `${name}.cmo3`;
         a.click();
         URL.revokeObjectURL(url);
       } else {

@@ -49,3 +49,12 @@ __pycache__/
 
 # Local dev scripts (platform-specific)
 _start.bat
+
+# Export artifacts (SS dev testing output, not source)
+*.rig.log.json
+*_live2d.zip
+girl.png
+waifu.png
+shelby.png
+*.blend
+*.blend1

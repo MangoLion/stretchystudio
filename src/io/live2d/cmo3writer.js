@@ -387,6 +387,55 @@ export async function generateCmo3(input) {
     modelName = 'StretchyStudio Export',
     generateRig = false,
   } = input;
+
+  // ── Phase 0 diagnostic log (only populated when generateRig is on) ──
+  // Emitted as `{modelName}.rig.log.json` alongside the .cmo3 in the export zip.
+  // Pure capture — no behavior changes. See docs/live2d-export/AUTO_RIG_PLAN.md.
+  const rigDebugLog = generateRig ? {
+    version: 1,
+    timestamp: new Date().toISOString(),
+    modelName,
+    canvas: { W: canvasW, H: canvasH },
+    meshSummary: [],
+    tagCoverage: null,
+    faceUnion: null,
+    facePivot: null,
+    neckUnion: null,
+    neckWarp: null,
+    faceParallax: null,
+    eyeClosureContexts: [],
+    params: {},
+    warnings: [],
+  } : null;
+
+  if (rigDebugLog) {
+    const tags = new Set();
+    let taglessCount = 0;
+    for (const m of meshes) {
+      const v = m.vertices;
+      if (!v || v.length < 2) continue;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (let i = 0; i < v.length; i += 2) {
+        if (v[i]     < minX) minX = v[i];
+        if (v[i]     > maxX) maxX = v[i];
+        if (v[i + 1] < minY) minY = v[i + 1];
+        if (v[i + 1] > maxY) maxY = v[i + 1];
+      }
+      const W = maxX - minX, H = maxY - minY;
+      rigDebugLog.meshSummary.push({
+        tag: m.tag ?? null,
+        bbox: {
+          minX, minY, maxX, maxY, W, H,
+          cx: (minX + maxX) / 2, cy: (minY + maxY) / 2,
+          aspect: H > 0 ? W / H : null,
+        },
+        vertexCount: v.length / 2,
+      });
+      if (m.tag) tags.add(m.tag); else taglessCount++;
+    }
+    rigDebugLog.tagCoverage = { present: [...tags].sort(), taglessCount };
+  }
+
   const x = new XmlBuilder();
 
   // ==================================================================
@@ -575,52 +624,195 @@ export async function generateCmo3(input) {
   const perMesh = [];
   const layerRefs = []; // [{pidLayer, pidImg}] for building CLayerGroup/CLayeredImage after loop
 
-  // ── Eyelash closure band (Session 17, per-vertex CArtMeshForm approach) ──
-  // For each eyelash-l/eyelash-r mesh: extract lower contour (bin-max-Y), offset upward
-  // by 15% of mesh height → "band upper Y". Vertices above this line collapse to it at
-  // closed; at/below stay at rest. Evaluated per-vertex (not grid) so fine contour holds.
+  // ── Eye closure band (Apr 2026 P7: parabola fit to eyewhite bottom edge) ──
+  // User-requested algorithm redesign:
+  //   "Take the bottom edge of eyewhite (the natural eye closure line, the 'zip'
+  //    curve). The edge stays static. Meshes blend into that edge. No horizontal
+  //    deformation. If the edge isn't wide enough, extrapolate the math curve."
+  //
+  // Implementation:
+  //   1. Per side, collect ALL eyewhite vertices (fallback to eyelash if none)
+  //   2. X-uniform bins (not vertex-index) → lower edge sample points (max Y per bin)
+  //   3. Fit parabola y = a·xn² + b·xn + c via least-squares (Cramer's rule)
+  //   4. The parabola IS the closure curve — evaluated per-vertex at closure time
+  //   5. Extrapolates naturally outside eyewhite's X range (parabola tails)
+  //
+  // Algorithm is style-agnostic — curve comes from each character's own anatomy,
+  // not from hand-tuned style presets.
   const pidParamEyeLOpenEarly = paramDefs.find(p => p.id === 'ParamEyeLOpen')?.pid;
   const pidParamEyeROpenEarly = paramDefs.find(p => p.id === 'ParamEyeROpen')?.pid;
-  const EYELASH_BAND_FRAC = 0.05;
-  const EYELASH_CLOSED_SHIFT_FRAC = 0.10; // shift closed state up by this fraction of mesh height
-  const eyelashBandCanvas = new Map(); // side ('l'/'r') → [[x, bandUpperY], ...] canvas space
-  const eyelashShiftCanvas = new Map(); // side → pixel shift to apply at closed state (positive = up)
-  for (const mesh of meshes) {
-    if (mesh.tag !== 'eyelash-l' && mesh.tag !== 'eyelash-r') continue;
-    const verts = mesh.vertices;
-    const nv = verts.length / 2;
-    if (nv < 3) continue;
-    const pairs = new Array(nv);
-    for (let i = 0; i < nv; i++) pairs[i] = [verts[i * 2], verts[i * 2 + 1]];
-    pairs.sort((a, b) => a[0] - b[0]);
-    const pLo = Math.floor(nv * 0.20);
-    const pHi = Math.max(pLo + 1, Math.ceil(nv * 0.80));
-    const central = pairs.slice(pLo, pHi);
-    if (central.length < 4) continue;
-    const N_BINS = Math.min(8, Math.max(3, Math.floor(central.length / 3)));
-    const bottomPts = [];
-    for (let b = 0; b < N_BINS; b++) {
-      const binStart = Math.floor(central.length * b / N_BINS);
-      const binEnd = Math.floor(central.length * (b + 1) / N_BINS);
-      if (binEnd <= binStart) continue;
-      let maxY = -Infinity, sumX = 0;
-      for (let i = binStart; i < binEnd; i++) {
-        if (central[i][1] > maxY) maxY = central[i][1];
-        sumX += central[i][0];
+  // Unified across styles (Apr 2026): the parabola-fit closure derives the curve
+  // from the character's OWN eyewhite geometry, so the same constants work for
+  // anime and western. Strip thickness at 6% of lash height gives a clean thin
+  // closed-eye line; scales naturally with lash height across character sizes.
+  const EYE_CLOSURE_LASH_STRIP_FRAC = 0.06;
+  const EYE_CLOSURE_BIN_COUNT       = 6;  // X-uniform bins for lower-edge extraction
+  // Per-side parabola fit: {a, b, c, xMid, xScale} in CANVAS space. Evaluates to y.
+  const eyewhiteCurvePerSide = new Map();
+  const eyelashMeshBboxPerSide = new Map(); // still needed for lash-strip compression
+  // P11 (Apr 2026): eye-region union bbox per side.
+  // When eyewhite/iris extends below eyelash (anime big-iris topology), the
+  // closure band sits below the eyelash mesh's own bbox. Without extending the
+  // rig warp bbox to cover the whole eye region, eyelash vertices get clamped
+  // to lash bbox → gap between closed lash line and closed white/iris line.
+  // Eye-part meshes get their rig warp bbox extended to this union.
+  const eyeUnionBboxPerSide = new Map();
+  for (const side of ['l', 'r']) {
+    // Primary: fit parabola to eyewhite's lower edge. Fallback: eyelash's lower edge.
+    let sourceVerts = null;
+    let sourceTag = null;
+    for (const m of meshes) {
+      if (m.tag === `eyewhite-${side}` && m.vertices && m.vertices.length >= 6) {
+        sourceVerts = m.vertices; sourceTag = 'eyewhite'; break;
       }
-      bottomPts.push([sumX / (binEnd - binStart), maxY]);
     }
-    if (bottomPts.length < 2) continue;
-    let meshMinY = Infinity, meshMaxY = -Infinity;
-    for (const p of pairs) {
-      if (p[1] < meshMinY) meshMinY = p[1];
-      if (p[1] > meshMaxY) meshMaxY = p[1];
+    if (!sourceVerts) {
+      for (const m of meshes) {
+        if (m.tag === `eyelash-${side}` && m.vertices && m.vertices.length >= 6) {
+          sourceVerts = m.vertices; sourceTag = 'eyelash-fallback'; break;
+        }
+      }
     }
-    const bandThickness = (meshMaxY - meshMinY) * EYELASH_BAND_FRAC;
-    const bandCurve = bottomPts.map(([x, y]) => [x, y - bandThickness]);
-    const side = mesh.tag.endsWith('-l') ? 'l' : 'r';
-    eyelashBandCanvas.set(side, bandCurve);
-    eyelashShiftCanvas.set(side, (meshMaxY - meshMinY) * EYELASH_CLOSED_SHIFT_FRAC);
+    // Always capture eyelash bbox for strip compression (separate from source choice)
+    for (const m of meshes) {
+      if (m.tag !== `eyelash-${side}` || !m.vertices) continue;
+      let lashMinY = Infinity, lashMaxY = -Infinity;
+      for (let i = 1; i < m.vertices.length; i += 2) {
+        if (m.vertices[i] < lashMinY) lashMinY = m.vertices[i];
+        if (m.vertices[i] > lashMaxY) lashMaxY = m.vertices[i];
+      }
+      if (lashMaxY > lashMinY) {
+        eyelashMeshBboxPerSide.set(side, {
+          minY: lashMinY, maxY: lashMaxY, H: lashMaxY - lashMinY,
+        });
+      }
+      break;
+    }
+    if (!sourceVerts) continue;
+    // Sort by X
+    const nv = sourceVerts.length / 2;
+    const pairs = new Array(nv);
+    for (let i = 0; i < nv; i++) pairs[i] = [sourceVerts[i * 2], sourceVerts[i * 2 + 1]];
+    pairs.sort((a, b) => a[0] - b[0]);
+    const xMin = pairs[0][0];
+    const xMax = pairs[pairs.length - 1][0];
+    if (xMax - xMin < 1) continue;
+    // X-uniform bins: max-Y per bin (bottom contour samples)
+    const binW = (xMax - xMin) / EYE_CLOSURE_BIN_COUNT;
+    const samples = [];
+    for (let b = 0; b < EYE_CLOSURE_BIN_COUNT; b++) {
+      const bxLo = xMin + b * binW;
+      const bxHi = b === EYE_CLOSURE_BIN_COUNT - 1 ? xMax + 1 : xMin + (b + 1) * binW;
+      let maxY = -Infinity, sumX = 0, count = 0;
+      for (const p of pairs) {
+        if (p[0] < bxLo || p[0] >= bxHi) continue;
+        if (p[1] > maxY) maxY = p[1];
+        sumX += p[0]; count++;
+      }
+      if (count > 0) samples.push([sumX / count, maxY]);
+    }
+    if (samples.length < 3) continue;
+    // Flip for eyelash fallback: eyelash's lower edge is the UPPER eye opening
+    // contour (lash is at TOP of eye), so flip it to approximate the lower-lid curve.
+    // For eyewhite, the lower edge IS the lower eyelid — no flip.
+    let fitSamples = samples;
+    if (sourceTag === 'eyelash-fallback' && samples.length >= 2) {
+      const [x0, y0] = samples[0];
+      const [xN, yN] = samples[samples.length - 1];
+      const slope = (yN - y0) / Math.max(1e-6, xN - x0);
+      fitSamples = samples.map(([x, y]) => {
+        const yLine = y0 + slope * (x - x0);
+        return [x, 2 * yLine - y];
+      });
+    }
+    // Fit parabola y = a·xn² + b·xn + c with xn = (x - xMid) / xScale
+    const xMid = (xMin + xMax) / 2;
+    const xScale = (xMax - xMin) / 2 || 1;
+    let sX = 0, sY = 0, sX2 = 0, sX3 = 0, sX4 = 0, sXY = 0, sX2Y = 0;
+    for (const [x, y] of fitSamples) {
+      const xn = (x - xMid) / xScale;
+      const xn2 = xn * xn;
+      sX += xn; sY += y;
+      sX2 += xn2; sX3 += xn2 * xn; sX4 += xn2 * xn2;
+      sXY += xn * y; sX2Y += xn2 * y;
+    }
+    const n = fitSamples.length;
+    const det3 = (a11, a12, a13, a21, a22, a23, a31, a32, a33) =>
+      a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31);
+    const detM = det3(n, sX, sX2, sX, sX2, sX3, sX2, sX3, sX4);
+    if (Math.abs(detM) < 1e-9) continue;
+    const c = det3(sY, sX, sX2, sXY, sX2, sX3, sX2Y, sX3, sX4) / detM;
+    const bc = det3(n, sY, sX2, sX, sXY, sX3, sX2, sX2Y, sX4) / detM;
+    const ac = det3(n, sX, sY, sX, sX2, sXY, sX2, sX3, sX2Y) / detM;
+    eyewhiteCurvePerSide.set(side, {
+      a: ac, b: bc, c,
+      xMid, xScale,
+      sourceTag,
+      xMin, xMax, sampleCount: samples.length,
+    });
+    // Union bbox across eyelash + eyewhite + iris for this side (P11)
+    let uMinX = Infinity, uMinY = Infinity, uMaxX = -Infinity, uMaxY = -Infinity;
+    for (const m of meshes) {
+      if (m.tag !== `eyelash-${side}` && m.tag !== `eyewhite-${side}` && m.tag !== `irides-${side}`) continue;
+      const mv = m.vertices;
+      if (!mv) continue;
+      for (let i = 0; i < mv.length; i += 2) {
+        if (mv[i]     < uMinX) uMinX = mv[i];
+        if (mv[i]     > uMaxX) uMaxX = mv[i];
+        if (mv[i + 1] < uMinY) uMinY = mv[i + 1];
+        if (mv[i + 1] > uMaxY) uMaxY = mv[i + 1];
+      }
+    }
+    if (uMaxX > uMinX && uMaxY > uMinY) {
+      eyeUnionBboxPerSide.set(side, {
+        minX: uMinX, minY: uMinY, maxX: uMaxX, maxY: uMaxY,
+      });
+    }
+  }
+  // Evaluate the fitted parabola at arbitrary canvas X (extrapolates naturally).
+  const evalClosureCurve = (params, px) => {
+    if (!params) return null;
+    const xn = (px - params.xMid) / params.xScale;
+    return params.a * xn * xn + params.b * xn + params.c;
+  };
+  // Back-compat shim: eyelashBandCanvas/eyelashShiftCanvas are used by the closure
+  // emission loop and by pm.hasEyelidClosure detection. We keep them populated as
+  // sampled curve points so the hasEyelidClosure check still works.
+  const eyelashBandCanvas = new Map();
+  const eyelashShiftCanvas = new Map();
+  for (const side of ['l', 'r']) {
+    const params = eyewhiteCurvePerSide.get(side);
+    if (!params) continue;
+    const N = 9;
+    const curve = [];
+    const xLo = params.xMin;
+    const xHi = params.xMax;
+    for (let i = 0; i < N; i++) {
+      const t = i / (N - 1);
+      const x = xLo + t * (xHi - xLo);
+      curve.push([x, evalClosureCurve(params, x)]);
+    }
+    eyelashBandCanvas.set(side, curve);
+    eyelashShiftCanvas.set(side, 0);
+  }
+  if (rigDebugLog) {
+    rigDebugLog.eyelashBand = {
+      note: 'Closure curve: parabola fit to eyewhite lower edge per side (X-uniform bins + least-squares). Parabola IS the closure target. Extrapolates naturally beyond eyewhite X range. All eye meshes blend Y to curve(vertexX); X stays. Per-mesh rwBox clamp + lash strip compression + union-bbox rwBox extension apply.',
+      constants: {
+        LASH_STRIP_FRAC: EYE_CLOSURE_LASH_STRIP_FRAC,
+        BIN_COUNT:       EYE_CLOSURE_BIN_COUNT,
+      },
+      l: eyewhiteCurvePerSide.has('l') ? {
+        parabola: eyewhiteCurvePerSide.get('l'),
+        sampledCurve: eyelashBandCanvas.get('l'),
+        lashBbox: eyelashMeshBboxPerSide.get('l') ?? null,
+      } : null,
+      r: eyewhiteCurvePerSide.has('r') ? {
+        parabola: eyewhiteCurvePerSide.get('r'),
+        sampledCurve: eyelashBandCanvas.get('r'),
+        lashBbox: eyelashMeshBboxPerSide.get('r') ?? null,
+      } : null,
+    };
   }
   const evalBandY = (bandCurve, px) => {
     if (!bandCurve || bandCurve.length < 2) return null;
@@ -1752,6 +1944,11 @@ export async function generateCmo3(input) {
   // partId → { gridMinX, gridMinY, gridW, gridH } for 0..1 conversion in section 4
   const rigWarpBbox = new Map();
 
+  // Path C diagnostic (Apr 2026): partId → rig warp grid corner positions (in parent
+  // deformer's coord space). Used to verify that the grid itself is positioned where
+  // we expect, which tells us if a rendering displacement is algorithmic or chain-level.
+  const rigWarpDebugInfo = new Map();
+
   // Look up standard parameter PIDs (created by generateRig standardParams above)
   const pidParamBreath = paramDefs.find(p => p.id === 'ParamBreath')?.pid;
   const pidParamBodyAngleX = paramDefs.find(p => p.id === 'ParamBodyAngleX')?.pid;
@@ -2040,15 +2237,69 @@ export async function generateCmo3(input) {
       W:   (fpUnionMaxX + padX) - (fpUnionMinX - padX),
       H:   (fpUnionMaxY + padY) - (fpUnionMinY - padY),
     };
+    if (rigDebugLog) {
+      rigDebugLog.faceUnion = {
+        rawMinX: fpUnionMinX, rawMinY: fpUnionMinY,
+        rawMaxX: fpUnionMaxX, rawMaxY: fpUnionMaxY,
+        padX, padY,
+        paddedMinX: faceUnionBbox.minX, paddedMinY: faceUnionBbox.minY,
+        paddedMaxX: faceUnionBbox.maxX, paddedMaxY: faceUnionBbox.maxY,
+        W: faceUnionBbox.W, H: faceUnionBbox.H,
+        aspect: faceUnionBbox.H > 0 ? faceUnionBbox.W / faceUnionBbox.H : null,
+      };
+    }
+  } else if (rigDebugLog) {
+    rigDebugLog.warnings.push('No face-parallax-tagged meshes found; FaceParallax warp skipped');
   }
   // canvas → FaceParallax 0..1 local (used for rig warp grid rebasing, section 3c)
   const canvasToFaceUnionX = (cx) => faceUnionBbox
     ? (cx - faceUnionBbox.minX) / faceUnionBbox.W : 0;
   const canvasToFaceUnionY = (cy) => faceUnionBbox
     ? (cy - faceUnionBbox.minY) / faceUnionBbox.H : 0;
-  // Face Rotation pivot (canvas space): bottom-center of face union (chin area).
-  const facePivotCx = faceUnionBbox ? (faceUnionBbox.minX + faceUnionBbox.maxX) / 2 : null;
-  const facePivotCy = faceUnionBbox ? faceUnionBbox.maxY : null;
+  // Face Rotation pivot (canvas space): anatomical chin anchor = bottom of
+  // the 'face' mesh bbox + X-center of the 'face' mesh.
+  //
+  // Prior behavior (pre-Phase-0) used `faceUnionBbox.maxY` as a "chin proxy",
+  // but the face union includes hair and ears, which typically extend well
+  // below the actual chin. Phase-0 diagnostic log measurements:
+  //   girl.psd:  face.maxY=352,  faceUnion.maxY=456  (104 px below chin)
+  //   waifu.psd: face.maxY=424,  faceUnion.maxY=575  (151 px below chin)
+  // The 151 px offset made ParamAngleZ rotate waifu's head around a point
+  // far below the neck, producing a large unnatural swing arc.
+  //
+  // See docs/live2d-export/AUTO_RIG_PLAN.md (P0 fix, evidence-driven).
+  let faceMeshBbox = null;
+  for (const m of meshes) {
+    if (m.tag !== 'face') continue;
+    const v = m.vertices;
+    if (!v || v.length < 2) break;
+    let fMinX = Infinity, fMinY = Infinity, fMaxX = -Infinity, fMaxY = -Infinity;
+    for (let i = 0; i < v.length; i += 2) {
+      if (v[i]     < fMinX) fMinX = v[i];
+      if (v[i]     > fMaxX) fMaxX = v[i];
+      if (v[i + 1] < fMinY) fMinY = v[i + 1];
+      if (v[i + 1] > fMaxY) fMaxY = v[i + 1];
+    }
+    faceMeshBbox = { minX: fMinX, minY: fMinY, maxX: fMaxX, maxY: fMaxY };
+    break;
+  }
+  const facePivotCx = faceMeshBbox
+    ? (faceMeshBbox.minX + faceMeshBbox.maxX) / 2
+    : (faceUnionBbox ? (faceUnionBbox.minX + faceUnionBbox.maxX) / 2 : null);
+  const facePivotCy = faceMeshBbox
+    ? faceMeshBbox.maxY
+    : (faceUnionBbox ? faceUnionBbox.maxY : null);
+  if (rigDebugLog && (faceMeshBbox || faceUnionBbox)) {
+    rigDebugLog.facePivot = {
+      cx: facePivotCx,
+      cy: facePivotCy,
+      anchorSource: faceMeshBbox ? 'face_mesh_bottom' : 'face_union_max_y_fallback',
+      faceMeshBbox: faceMeshBbox ?? null,
+      note: faceMeshBbox
+        ? 'chin anchor = face mesh bottom + X-center (Phase-0 fix, Apr 2026)'
+        : 'fallback: no face-tagged mesh found; using face union bbox bottom-center',
+    };
+  }
 
   // ── Neck warp pre-pass (Session 20) ─────────────────────────────────────
   // Union canvas bbox of all neck-tagged meshes. A dedicated NeckWarp covers
@@ -2081,6 +2332,18 @@ export async function generateCmo3(input) {
       W:   (nwUnionMaxX + padX) - (nwUnionMinX - padX),
       H:   (nwUnionMaxY + padY) - (nwUnionMinY - padY),
     };
+    if (rigDebugLog) {
+      rigDebugLog.neckUnion = {
+        rawMinX: nwUnionMinX, rawMinY: nwUnionMinY,
+        rawMaxX: nwUnionMaxX, rawMaxY: nwUnionMaxY,
+        padX, padY,
+        paddedMinX: neckUnionBbox.minX, paddedMinY: neckUnionBbox.minY,
+        paddedMaxX: neckUnionBbox.maxX, paddedMaxY: neckUnionBbox.maxY,
+        W: neckUnionBbox.W, H: neckUnionBbox.H,
+      };
+    }
+  } else if (rigDebugLog) {
+    rigDebugLog.warnings.push('No neck-tagged meshes found; NeckWarp skipped');
   }
   const canvasToNeckWarpX = (cx) => neckUnionBbox
     ? (cx - neckUnionBbox.minX) / neckUnionBbox.W : 0;
@@ -2209,6 +2472,16 @@ export async function generateCmo3(input) {
       eyeContexts.push({
         tag: m.tag, isEyewhite, curvePoints, bboxCenterX, bboxCenterY,
       });
+      if (rigDebugLog) {
+        rigDebugLog.eyeClosureContexts.push({
+          sourceTag: m.tag, isEyewhite,
+          meshBbox: { minY: meshMinY, maxY: meshMaxY, H: meshMaxY - meshMinY },
+          yOffset_canvasPx: yOffset,
+          parabolaFit: { a, b, c, xMid, xScale },
+          curveSampleCount: curvePoints.length,
+          curvePoints_bodyX01: curvePoints,
+        });
+      }
     }
   }
 
@@ -2264,6 +2537,22 @@ export async function generateCmo3(input) {
         if (vx < bxMin) bxMin = vx; if (vy < byMin) byMin = vy;
         if (vx > bxMax) bxMax = vx; if (vy > byMax) byMax = vy;
       }
+      // P11: extend eye-part rig warp bbox to eye union bounds. Needed because
+      // the closure band may fall outside the mesh's own bbox (e.g., waifu L eye:
+      // eyewhite extends 19 px below eyelash → band is outside lash bbox →
+      // P5 clamp squashes lash to its own max, leaving gap with eyewhite/iris
+      // closed lines). Union bbox ensures all eye-part meshes share a common
+      // warp domain that covers the band.
+      if (EYE_PART_TAGS.has(m.tag)) {
+        const side = m.tag.endsWith('-l') ? 'l' : m.tag.endsWith('-r') ? 'r' : null;
+        const unionBb = side ? eyeUnionBboxPerSide.get(side) : null;
+        if (unionBb) {
+          if (unionBb.minX < bxMin) bxMin = unionBb.minX;
+          if (unionBb.minY < byMin) byMin = unionBb.minY;
+          if (unionBb.maxX > bxMax) bxMax = unionBb.maxX;
+          if (unionBb.maxY > byMax) byMax = unionBb.maxY;
+        }
+      }
       const padX = (bxMax - bxMin) * 0.1 || 10;
       const padY = (byMax - byMin) * 0.1 || 10;
       bxMin -= padX; byMin -= padY; bxMax += padX; byMax += padY;
@@ -2298,6 +2587,31 @@ export async function generateCmo3(input) {
             restGrid[idx + 1] = canvasToBodyXY(cy);
           }
         }
+      }
+
+      // Path C diagnostic: capture rig-warp grid corners for eye parts.
+      // Lets us verify the grid is positioned correctly in its parent's coord space
+      // (FaceParallax 0..1 for eye parts). If grid corners are off, rendering
+      // displacement has nothing to do with the closure algorithm.
+      if (rigDebugLog && EYE_PART_TAGS && EYE_PART_TAGS.has(m.tag)) {
+        const cornerIdx = (r, c) => (r * gW + c) * 2;
+        const tl = cornerIdx(0, 0);
+        const tr = cornerIdx(0, gW - 1);
+        const bl = cornerIdx(gH - 1, 0);
+        const br = cornerIdx(gH - 1, gW - 1);
+        rigWarpDebugInfo.set(partId, {
+          parentSpace: isFaceTag ? 'FaceParallax 0..1'
+                     : isNeckTag ? 'NeckWarp 0..1'
+                     : 'Body X 0..1',
+          gridDim: { cols: gW, rows: gH },
+          gridCanvasBbox: { minX: bxMin, minY: byMin, W: bW, H: bH },
+          gridCorners_parentSpace: {
+            topLeft:     [restGrid[tl],     restGrid[tl + 1]],
+            topRight:    [restGrid[tr],     restGrid[tr + 1]],
+            bottomLeft:  [restGrid[bl],     restGrid[bl + 1]],
+            bottomRight: [restGrid[br],     restGrid[br + 1]],
+          },
+        });
       }
 
       const [, pidRigWarpGuid] = x.shared('CDeformerGuid', { uuid: uuid(), note: `RigWarp_${sanitizedName}` });
@@ -2854,6 +3168,15 @@ export async function generateCmo3(input) {
       // At ±30, top row shifts in X by NECK_TILT_FRAC * nwSpanX_bx.
       // Row gradient: sin(π·(1 - rf) / 2) — 1 at top row, 0 at bottom row.
       const NECK_TILT_FRAC = 0.08;
+      if (rigDebugLog) {
+        rigDebugLog.neckWarp = {
+          NECK_TILT_FRAC,
+          gridCols: nwCol + 1, gridRows: nwRow + 1,
+          spanX_bodyX01: nwSpanX_bx,
+          maxShiftX_bodyX01: NECK_TILT_FRAC * nwSpanX_bx,
+          note: 'top row shift at ParamAngleZ = +30 in Body X 0..1 space',
+        };
+      }
       const nwKeys = [-30, 0, 30];
       const nwGridPositions = [];
       for (const k of nwKeys) {
@@ -3013,62 +3336,201 @@ export async function generateCmo3(input) {
         const fpSpanX_bx = faceUnionBbox.W;
         const fpSpanY_bx = faceUnionBbox.H;
 
-        // 9 keyforms — layered deformation following Session 15 Body Z pattern:
-        //   1. Base bow: center columns/rows bow most (1.5·sin·π·f − 0.5 profile, Hiyori).
-        //   2. Asymmetric perspective: far side of rotation shifts more than near side
-        //      (sign-dependent, like Body Z's perspCf). Gives the "turning away" feel.
-        //   3. Cross-axis Y-on-AngleX: face tilts slightly as it turns horizontally —
-        //      columns on the turning-away side drop, near side rises (3D depth cue).
-        //   4. Row-fade: top and bottom of face move less (hair/chin edges), middle rows
-        //      (eye/nose zone) move most. Same sin·π·rf falloff as Body Y's torsoPeak.
-        const FP_BOW_X_FRAC   = 0.04;  // per-column bow on X shift at ±30°
-        const FP_PERSP_X_FRAC = 0.02;  // asymmetric perspective add-on (X)
-        const FP_CROSS_Y_FRAC = 0.020; // cross-axis Y shift per column on AngleX
-        const FP_BOW_Y_FRAC   = 0.03;  // per-row bow on Y shift at ±30°
-        const FP_PERSP_Y_FRAC = 0.015; // asymmetric perspective add-on (Y)
-        const FP_CROSS_X_FRAC = 0.015; // cross-axis X shift per row on AngleY
+        // ── P8 (Apr 2026): Depth-weighted ellipsoidal face parallax ──
+        // Replaces parametric bow/persp/cross-axis with 3D rotation of a virtual
+        // hemisphere centered on the face. Each grid point gets a Z proportional
+        // to distance from face center (ellipsoidal falloff). At ±30° param, we
+        // rotate the (u, v, z) point around the Y/X axes and project back to 2D.
+        //
+        // Natural behaviors that emerge from the geometry (not hand-tuned):
+        //   - Center of face shifts most (high Z), edges shift least (Z≈0)
+        //   - Perspective foreshortening (far side slightly less visible)
+        //   - Asymmetric shifts on asymmetric rest poses (tilted heads handled correctly)
+        //
+        // Tunables:
+        //   FP_DEPTH_K         — depth magnitude (0 = flat, 1 = full hemisphere)
+        //   FP_MAX_ANGLE_X/Y   — virtual head rotation at ParamAngle = ±30
+        //
+        // Rotation center = face mesh center (anatomical face). Fallback to union.
+        const faceMeshCxLocal = faceMeshBbox
+          ? (faceMeshBbox.minX + faceMeshBbox.maxX) / 2
+          : facePivotCx;
+        const faceMeshCyLocal = faceMeshBbox
+          ? (faceMeshBbox.minY + faceMeshBbox.maxY) / 2
+          : (faceUnionBbox.minY + faceUnionBbox.maxY) / 2;
+        const fpRadiusX = faceMeshBbox
+          ? (faceMeshBbox.maxX - faceMeshBbox.minX) / 2
+          : fpSpanX_bx / 2;
+        const fpRadiusY = faceMeshBbox
+          ? (faceMeshBbox.maxY - faceMeshBbox.minY) / 2
+          : fpSpanY_bx / 2;
+        const FP_DEPTH_K         = 0.80;  // Z at face center (fully forward)
+        const FP_EDGE_DEPTH_K    = 0.30;  // Z at face edges (was 0 → edges had no shift)
+        const FP_MAX_ANGLE_X_DEG = 15;
+        const FP_MAX_ANGLE_Y_DEG = 12;
+
+        // Protected regions: tagged meshes that should rigidly translate (not stretch)
+        // during parallax. Grid points inside/near these regions get blended toward
+        // the rigid shift at the region's center instead of their own position's shift.
+        // Value is 0..1: 0 = no protection (full parallax), 1 = fully rigid at center.
+        const FP_PROTECTION_STRENGTH = 1.0; // global multiplier on all protection values
+        const PROTECTION_PER_TAG = {
+          'eyelash':     0.95, 'eyelash-l':  0.95, 'eyelash-r':  0.95,
+          'eyewhite':    0.95, 'eyewhite-l': 0.95, 'eyewhite-r': 0.95,
+          'irides':      1.00, 'irides-l':   1.00, 'irides-r':   1.00,
+          'eyebrow':     0.50, 'eyebrow-l':  0.50, 'eyebrow-r':  0.50,
+          'mouth':       0.30,
+          'nose':        0.30,
+        };
+        // Extra falloff buffer around each region (in normalized u/v units).
+        // Larger = smoother transition to natural parallax.
+        const FP_PROTECTION_FALLOFF_BUFFER = 0.12;
+        // Build protected regions array with bbox, center (u,v,z), falloff extents.
+        const protectedRegions = [];
+        for (const m of meshes) {
+          const basePro = PROTECTION_PER_TAG[m.tag];
+          if (basePro == null) continue;
+          const v = m.vertices;
+          if (!v || v.length < 2) continue;
+          let rMinX = Infinity, rMinY = Infinity, rMaxX = -Infinity, rMaxY = -Infinity;
+          for (let i = 0; i < v.length; i += 2) {
+            if (v[i]     < rMinX) rMinX = v[i];
+            if (v[i]     > rMaxX) rMaxX = v[i];
+            if (v[i + 1] < rMinY) rMinY = v[i + 1];
+            if (v[i + 1] > rMaxY) rMaxY = v[i + 1];
+          }
+          if (rMaxX <= rMinX || rMaxY <= rMinY) continue;
+          const rcx = (rMinX + rMaxX) / 2;
+          const rcy = (rMinY + rMaxY) / 2;
+          const ru = fpRadiusX > 0 ? (rcx - faceMeshCxLocal) / fpRadiusX : 0;
+          const rv = fpRadiusY > 0 ? (rcy - faceMeshCyLocal) / fpRadiusY : 0;
+          const ruu = ru * ru;
+          const rDome = ruu < 1 ? Math.sqrt(1 - ruu) : 0; // cylindrical along V (match grid z)
+          const rz = FP_EDGE_DEPTH_K + (FP_DEPTH_K - FP_EDGE_DEPTH_K) * rDome;
+          const halfU = fpRadiusX > 0 ? (rMaxX - rMinX) / (2 * fpRadiusX) : 0.05;
+          const halfV = fpRadiusY > 0 ? (rMaxY - rMinY) / (2 * fpRadiusY) : 0.05;
+          protectedRegions.push({
+            tag: m.tag,
+            protection: basePro * FP_PROTECTION_STRENGTH,
+            u: ru, v: rv, z: rz,
+            falloffU: halfU + FP_PROTECTION_FALLOFF_BUFFER,
+            falloffV: halfV + FP_PROTECTION_FALLOFF_BUFFER,
+          });
+        }
+
+        // Precompute (u, v, z) per grid point. Z uses a CYLINDRICAL dome along V
+        // (varies with u only, flat along v). This gives:
+        //   - Yaw (AngleX): natural perspective — edges have lower Z so shift less
+        //   - Pitch (AngleY): clean vertical translation — all v positions at same u
+        //     have same Z → no vertical compression weirdness
+        // Previously used ellipsoidal (varies with both u and v), which caused pitch
+        // to compress face vertically and stretch eyes.
+        const fpUVZ = new Float64Array(fpGridPts * 3);
+        for (let r = 0; r < fpGH; r++) {
+          for (let c = 0; c < fpGW; c++) {
+            const gi = r * fpGW + c;
+            const canvasGx = faceUnionBbox.minX + c * faceUnionBbox.W / fpCol;
+            const canvasGy = faceUnionBbox.minY + r * faceUnionBbox.H / fpRow;
+            const u = fpRadiusX > 0 ? (canvasGx - faceMeshCxLocal) / fpRadiusX : 0;
+            const v = fpRadiusY > 0 ? (canvasGy - faceMeshCyLocal) / fpRadiusY : 0;
+            const uu = u * u;
+            const dome = uu < 1 ? Math.sqrt(1 - uu) : 0;  // cylindrical along V
+            const z = FP_EDGE_DEPTH_K + (FP_DEPTH_K - FP_EDGE_DEPTH_K) * dome;
+            fpUVZ[gi * 3]     = u;
+            fpUVZ[gi * 3 + 1] = v;
+            fpUVZ[gi * 3 + 2] = z;
+          }
+        }
+
+        if (rigDebugLog) {
+          // Peak shift: at center (u=0, v=0, z=FP_DEPTH_K), rotation by θ gives u' = z·sin θ.
+          const peakThetaX = FP_MAX_ANGLE_X_DEG * Math.PI / 180;
+          const peakThetaY = FP_MAX_ANGLE_Y_DEG * Math.PI / 180;
+          const peakX = FP_DEPTH_K * Math.sin(peakThetaX) * fpRadiusX;
+          const peakY = FP_DEPTH_K * Math.sin(peakThetaY) * fpRadiusY;
+          rigDebugLog.faceParallax = {
+            algorithm: 'depth-weighted-cylindrical + protected-regions (P10)',
+            gridCols: fpGW, gridRows: fpGH,
+            spanX_canvasPx: fpSpanX_bx, spanY_canvasPx: fpSpanY_bx,
+            faceMeshCenter: { cx: faceMeshCxLocal, cy: faceMeshCyLocal },
+            fpRadius: { x: fpRadiusX, y: fpRadiusY },
+            constants: {
+              FP_DEPTH_K,
+              FP_EDGE_DEPTH_K,
+              FP_MAX_ANGLE_X_DEG,
+              FP_MAX_ANGLE_Y_DEG,
+              FP_PROTECTION_STRENGTH,
+              FP_PROTECTION_FALLOFF_BUFFER,
+            },
+            peakShifts_canvasPx: {
+              angleX_plus30_center: peakX,
+              angleY_plus30_center: peakY,
+            },
+            protectedRegions: protectedRegions.map(r => ({
+              tag: r.tag,
+              protection: r.protection,
+              centerUVZ: { u: r.u, v: r.v, z: r.z },
+              falloff: { u: r.falloffU, v: r.falloffV },
+            })),
+            note: 'Grid point Z from ellipsoidal falloff + per-region protection blend. Protected regions (eyes, brows, mouth, nose) rigidly translate via their center-shift; skin/hair/ears get full depth parallax. FaceParallax grid in canvas-px offsets from facePivot.',
+          };
+        }
         const fpGridPositions = [];
         const fpFormGuids = [];
         for (const [ax, ay] of fpKeyCombos) {
-          const signX = ax / 30;
-          const signY = ay / 30;
+          const thetaX = (ax / 30) * FP_MAX_ANGLE_X_DEG * Math.PI / 180;
+          const thetaY = (ay / 30) * FP_MAX_ANGLE_Y_DEG * Math.PI / 180;
+          const cosX = Math.cos(thetaX), sinX = Math.sin(thetaX);
+          const cosY = Math.cos(thetaY), sinY = Math.sin(thetaY);
           const pos = new Float64Array(fpRestLocal);
-          if (signX !== 0 || signY !== 0) {
-            for (let r = 0; r < fpGH; r++) {
-              for (let c = 0; c < fpGW; c++) {
-                const idx = (r * fpGW + c) * 2;
-                const cf = c / (fpGW - 1);
-                const rf = r / (fpGH - 1);
-                const bowC = 1.5 * Math.sin(Math.PI * cf) - 0.5;
-                const bowR = 1.5 * Math.sin(Math.PI * rf) - 0.5;
-                // Asymmetric perspective: at +sign, FAR side (cf=0) gets more shift;
-                // at -sign, far side (cf=1) gets more. Mirrors Body Z's perspCf.
-                const perspCf = signX < 0 ? cf : (1 - cf);
-                const perspRf = signY < 0 ? rf : (1 - rf);
-                // Row fade: edges move less (sin·π·rf peaks at 0.5). Same for columns.
-                const rowFade = Math.sin(Math.PI * rf);
-                const colFade = Math.sin(Math.PI * cf);
-
-                // ── X shift (driven by AngleX) ──
-                // Base bow + asymmetric perspective, faded by row so top/bottom edges
-                // don't shift as hard as eye/mouth zone.
-                pos[idx] += signX * (
-                  FP_BOW_X_FRAC   * bowC +
-                  FP_PERSP_X_FRAC * perspCf
-                ) * rowFade * fpSpanX_bx;
-                // Cross-axis: AngleX also produces a small Y shift per column —
-                // turning-away side drops, near side rises. This is the "tilt while
-                // turning" cue that sells the 3D feel.
-                pos[idx + 1] += signX * FP_CROSS_Y_FRAC * (cf - 0.5) * rowFade * fpSpanY_bx;
-
-                // ── Y shift (driven by AngleY) ──
-                pos[idx + 1] += -signY * (
-                  FP_BOW_Y_FRAC   * bowR +
-                  FP_PERSP_Y_FRAC * perspRf
-                ) * colFade * fpSpanY_bx;
-                // Cross-axis: AngleY adds a small X shift per row.
-                pos[idx] += -signY * FP_CROSS_X_FRAC * (rf - 0.5) * colFade * fpSpanX_bx;
+          if (ax !== 0 || ay !== 0) {
+            // Pre-compute per-region rigid shifts (one per protected region) for this keyform.
+            const regionShifts = protectedRegions.map(r => {
+              const rUy = r.u * cosX + r.z * sinX;
+              const rZy = -r.u * sinX + r.z * cosX;
+              const rVp = r.v * cosY - rZy * sinY;
+              return { shiftU: rUy - r.u, shiftV: rVp - r.v };
+            });
+            for (let gi = 0; gi < fpGridPts; gi++) {
+              const u = fpUVZ[gi * 3];
+              const v = fpUVZ[gi * 3 + 1];
+              const z = fpUVZ[gi * 3 + 2];
+              // Natural shift (full depth parallax)
+              const uY = u * cosX + z * sinX;
+              const zY = -u * sinX + z * cosX;
+              const vP = v * cosY - zY * sinY;
+              const natShiftU = uY - u;
+              const natShiftV = vP - v;
+              // Sum weighted rigid shifts from protected regions.
+              let totalWeight = 0;
+              let rigidShiftU = 0;
+              let rigidShiftV = 0;
+              for (let ri = 0; ri < protectedRegions.length; ri++) {
+                const r = protectedRegions[ri];
+                const du = (u - r.u) / r.falloffU;
+                const dv = (v - r.v) / r.falloffV;
+                const distSq = du * du + dv * dv;
+                if (distSq >= 1) continue; // outside falloff
+                const proximity = 1 - distSq; // smooth parabolic falloff
+                const w = r.protection * proximity;
+                totalWeight += w;
+                rigidShiftU += w * regionShifts[ri].shiftU;
+                rigidShiftV += w * regionShifts[ri].shiftV;
               }
+              // Blend: more weight → closer to rigid; clamp effective protection to 1
+              const effP = Math.min(1, totalWeight);
+              let finalShiftU, finalShiftV;
+              if (totalWeight > 0) {
+                const avgRigidU = rigidShiftU / totalWeight;
+                const avgRigidV = rigidShiftV / totalWeight;
+                finalShiftU = natShiftU * (1 - effP) + avgRigidU * effP;
+                finalShiftV = natShiftV * (1 - effP) + avgRigidV * effP;
+              } else {
+                finalShiftU = natShiftU;
+                finalShiftV = natShiftV;
+              }
+              pos[gi * 2]     += finalShiftU * fpRadiusX;
+              pos[gi * 2 + 1] += finalShiftV * fpRadiusY;
             }
           }
           fpGridPositions.push(pos);
@@ -3459,24 +3921,52 @@ export async function generateCmo3(input) {
       emitArtMeshForm(kfList, pm.pidFormMesh, verts); // rest (angle=0, no rotation)
       emitArtMeshForm(kfList, pm.pidFormMax, computeBakedPositions(BAKED_ANGLE_MAX));
     } else if (pm.hasEyelidClosure) {
-      // 2 keyforms: closed (k=0, band-collapsed) and open (k=1, rest).
-      // Band upper Y comes from eyelash-l's lower contour.
-      // - eyelash-l: above-band vertices clamp to bandY; at/below stay (preserves visible lash).
-      // - eyewhite-l / irides-l: ALL vertices snap to bandY so they hide behind the lash line.
-      const bandCanvas = eyelashBandCanvas.get(pm.closureSide);
+      // 2 keyforms: closed (k=0, parabola-collapsed) and open (k=1, rest).
+      // P7: closure curve = parabola fit to eyewhite's lower edge (per side).
+      // All eye meshes blend into the curve at their own X. No horizontal deformation.
+      // Parabola extrapolates naturally if a vertex X is outside the eyewhite fit range.
+      const curveParams = eyewhiteCurvePerSide.get(pm.closureSide);
+      const bandCanvas = eyelashBandCanvas.get(pm.closureSide); // sampled fallback
       const shiftPx = eyelashShiftCanvas.get(pm.closureSide) ?? 0;
       const isEyelash = meshes[pm.mi].tag === 'eyelash-l' || meshes[pm.mi].tag === 'eyelash-r';
       const closedCanvas = new Array(canvasVerts.length);
+      // P5 per-mesh clamp: keep closed Y inside rwBox → no warp-local extrapolation.
+      const rwMinY = rwBox ? rwBox.gridMinY : null;
+      const rwMaxY = rwBox ? rwBox.gridMinY + rwBox.gridH : null;
+      // P6 lash strip compression: instead of clamp-above-preserve-below
+      // (which masked the arc behind the flat preserved lash bottom), we
+      // compress ALL lash vertices into a thin strip centered on the band curve.
+      // Every lash vertex follows the arc → curve visibly renders.
+      // Iris/eyewhite still fully collapse to band (they hide behind lash strip).
+      const lashBbox = eyelashMeshBboxPerSide.get(pm.closureSide);
+      const lashStripHalfPx = lashBbox
+        ? lashBbox.H * EYE_CLOSURE_LASH_STRIP_FRAC
+        : 0;
       for (let i = 0; i < numVerts; i++) {
         const vx = canvasVerts[i * 2];
         const vy = canvasVerts[i * 2 + 1];
-        const bandY = evalBandY(bandCanvas, vx);
+        // Primary: evaluate parabola at this vertex X (extrapolates naturally).
+        // Fallback: sampled curve (if parabola fit failed for some reason).
+        let bandY = evalClosureCurve(curveParams, vx);
+        if (bandY === null) bandY = evalBandY(bandCanvas, vx);
         closedCanvas[i * 2] = vx;
         let closedY;
-        if (bandY === null) closedY = vy;
-        else if (isEyelash) closedY = vy < bandY ? bandY : vy; // keep lash band
-        else closedY = bandY; // eyewhite / iris: fully collapse
-        closedCanvas[i * 2 + 1] = closedY - shiftPx; // shift entire closed state up
+        if (bandY === null) {
+          closedY = vy;
+        } else if (isEyelash && lashBbox) {
+          // Scale lash Y from [lashMinY, lashMaxY] onto [bandY - half, bandY + half].
+          // Preserves lash's top-to-bottom vertex order so the curve is visibly
+          // rendered in the lash's thin strip (instead of hidden under a flat preserved bottom).
+          const relY = (vy - lashBbox.minY) / lashBbox.H; // 0 top → 1 bottom
+          closedY = bandY + (relY - 0.5) * 2 * lashStripHalfPx;
+        } else {
+          closedY = bandY; // eyewhite / iris: fully collapse to curve
+        }
+        if (rwMinY !== null) {
+          if (closedY < rwMinY) closedY = rwMinY;
+          if (closedY > rwMaxY) closedY = rwMaxY;
+        }
+        closedCanvas[i * 2 + 1] = closedY - shiftPx;
       }
       // Convert to same coord space as `verts` (warp-local 0..1 if rwBox, else deformer-local)
       let closedVerts;
@@ -3490,6 +3980,45 @@ export async function generateCmo3(input) {
         closedVerts = closedCanvas.map((v, i) => v - (i % 2 === 0 ? dfOrigin.x : dfOrigin.y));
       } else {
         closedVerts = closedCanvas;
+      }
+      // Path C diagnostic: capture sample vertex positions for eye parts so we can
+      // tell whether a rendering displacement comes from our closure algorithm or
+      // from the downstream deformer chain.
+      if (rigDebugLog && EYE_PART_TAGS && EYE_PART_TAGS.has(meshes[pm.mi].tag)) {
+        if (!rigDebugLog.perVertexClosure) rigDebugLog.perVertexClosure = [];
+        const sampleIndices = numVerts > 0
+          ? [0, Math.floor(numVerts / 2), numVerts - 1]
+          : [];
+        const samples = sampleIndices.map(vi => {
+          const rX = canvasVerts[vi * 2];
+          const rY = canvasVerts[vi * 2 + 1];
+          const cX = closedCanvas[vi * 2];
+          const cY = closedCanvas[vi * 2 + 1];
+          return {
+            vertexIndex: vi,
+            restCanvasXY: [rX, rY],
+            closedCanvasXY: [cX, cY],
+            restWarpLocalXY: rwBox
+              ? [(rX - rwBox.gridMinX) / rwBox.gridW,
+                 (rY - rwBox.gridMinY) / rwBox.gridH]
+              : null,
+            closedWarpLocalXY: rwBox
+              ? [(cX - rwBox.gridMinX) / rwBox.gridW,
+                 (cY - rwBox.gridMinY) / rwBox.gridH]
+              : null,
+          };
+        });
+        rigDebugLog.perVertexClosure.push({
+          tag: meshes[pm.mi].tag,
+          partId: pm.partId,
+          closureSide: pm.closureSide,
+          isEyelash,
+          rwBox: rwBox ?? null,
+          dfOrigin: dfOrigin ?? null,
+          rigWarpDebugInfo: rigWarpDebugInfo.get(pm.partId) ?? null,
+          totalVertexCount: numVerts,
+          samples,
+        });
       }
       const kfList = x.sub(meshSrc, 'carray_list', { 'xs.n': 'keyforms', count: '2' });
       emitArtMeshForm(kfList, pm.pidFormClosed, closedVerts); // keyIndex 0: closed
@@ -3743,5 +4272,5 @@ export async function generateCmo3(input) {
   });
 
   const cmo3 = await packCaff(caffFiles, 42);
-  return { cmo3, deformerParamMap };
+  return { cmo3, deformerParamMap, rigDebugLog };
 }

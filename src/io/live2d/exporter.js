@@ -272,7 +272,7 @@ export async function exportLive2DProject(project, images, opts = {}) {
 
   onProgress(`Generating .cmo3 (${meshes.length} meshes)...`);
 
-  const { cmo3, deformerParamMap } = await generateCmo3({
+  const { cmo3, deformerParamMap, rigDebugLog } = await generateCmo3({
     canvasW,
     canvasH,
     meshes,
@@ -286,24 +286,27 @@ export async function exportLive2DProject(project, images, opts = {}) {
   // Generate .can3 animation file if there are animations with deformer parameters
   const animations = project.animations ?? [];
   const hasAnimations = animations.length > 0 && deformerParamMap.size > 0;
+  const hasRigDebug = !!rigDebugLog;
 
-  if (hasAnimations) {
-    onProgress('Generating .can3 animation...');
+  // Bundle into ZIP if we have animations OR a rig debug log (Phase 0 diagnostic).
+  if (hasAnimations || hasRigDebug) {
     const cmo3FileName = `${modelName}.cmo3`;
-    const can3 = await generateCan3({
-      animations,
-      deformerParamMap,
-      cmo3FileName,
-      canvasW,
-      canvasH,
-      modelName,
-    });
-
-    // Return ZIP containing both .cmo3 and .can3
     const { default: JSZip } = await import('jszip');
     const zip = new JSZip();
     zip.file(cmo3FileName, cmo3);
-    zip.file(`${modelName}.can3`, can3);
+
+    if (hasAnimations) {
+      onProgress('Generating .can3 animation...');
+      const can3 = await generateCan3({
+        animations, deformerParamMap, cmo3FileName, canvasW, canvasH, modelName,
+      });
+      zip.file(`${modelName}.can3`, can3);
+    }
+
+    if (hasRigDebug) {
+      zip.file(`${modelName}.rig.log.json`, JSON.stringify(rigDebugLog, null, 2));
+    }
+
     return zip.generateAsync({ type: 'blob' });
   }
 
