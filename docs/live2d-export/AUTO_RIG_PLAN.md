@@ -246,6 +246,35 @@ as numeric tables, not bundled assets, so legally safe).
   character's own anatomy). UI radio buttons deleted; exporter and
   cmo3writer param plumbing removed. Cleaner default, no user-facing
   toggle that does nothing.
+- **P12 PSD alpha closure contour (user-requested, confirmed on all
+  three test characters):** P7 used bin-max on mesh vertices to find
+  the eyewhite's lower edge, but SS auto-triangulation clusters many
+  interior vertices in the middle of eye meshes. Bin-max grabbed
+  those interior vertices in central X-bins instead of the true
+  bottom edge → parabola fit gave wrong direction (∩ "hill" instead
+  of ∪ "лодочка"/bowl). Girl had this bug too at 14% amplitude —
+  subtle, user called it "perfect" without noticing. Shelby's smaller
+  mesh made it dramatic (38% amplitude, clearly inverted direction).
+  **Fix:** new helper `extractBottomContourFromLayerPng()` decodes
+  the layer's canvas-sized PNG via Image + OffscreenCanvas, scans
+  alpha from bottom of canvas upward per X column, returns the true
+  drawn bottom edge in canvas coords. These points feed the parabola
+  fit directly, bypassing mesh triangulation. Fallback to mesh
+  bin-max if decode fails. ~50ms overhead per layer × 4 eye layers
+  ≈ 200ms additional export time. Source-format-agnostic (uses the
+  PNG SS has in memory regardless of whether the original was PSD
+  or direct PNG layers). User tested on girl/waifu/shelby: "отлично
+  работает" — all three have correct ∪ direction now.
+- **PR #1 merged upstream on 2026-04-19** by MangoLion. All our P0–P12
+  work + Sessions 13–20 in the main MangoLion repo. Upstream added
+  two commits on top: `fc091d0` (neck head rotation bug fix —
+  possibly resolves our deferred P1 candidate about neck tilt
+  scaling) and `1267b52` (UI refactor — touches ExportModal,
+  LayerPanel, ArmaturePanel, etc.). Fast-forward merged into our
+  master (safe because our commits are ancestors of upstream HEAD).
+  Backup branch: `backup-before-upstream-merge-20260420`. Build
+  passes, our P0–P12 auto-rig logic intact (30+ identifier matches
+  verified via grep).
 
 ## Future directions (not scheduled)
 
