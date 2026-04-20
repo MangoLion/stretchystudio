@@ -1054,21 +1054,23 @@ export default function CanvasViewport({
   }, []);
 
 
-  /* ── Wizard: split merged arms into handwear-l / handwear-r ────────────── */
-  const handleWizardSplitArms = useCallback((mergedIndex, rightLayer, leftLayer) => {
+  /* ── Wizard: split merged parts into left/right ────────────── */
+  const handleWizardSplitParts = useCallback((splits) => {
     setWizardPsd(prev => {
       if (!prev) return prev;
       const newLayers = [...prev.layers];
       const newPartIds = [...prev.partIds];
 
-      // Build replacement entries (filter out nulls in case only one side was found)
-      const replacements = [];
-      if (rightLayer) replacements.push({ layer: rightLayer, partId: uid() });
-      if (leftLayer) replacements.push({ layer: leftLayer, partId: uid() });
+      const sortedSplits = [...splits].sort((a, b) => b.mergedIdx - a.mergedIdx);
 
-      // Replace the merged layer at mergedIndex with the split layers
-      newLayers.splice(mergedIndex, 1, ...replacements.map(r => r.layer));
-      newPartIds.splice(mergedIndex, 1, ...replacements.map(r => r.partId));
+      for (const { mergedIdx, rightLayer, leftLayer } of sortedSplits) {
+        const replacements = [];
+        if (rightLayer) replacements.push({ layer: rightLayer, partId: uid() });
+        if (leftLayer) replacements.push({ layer: leftLayer, partId: uid() });
+        
+        newLayers.splice(mergedIdx, 1, ...replacements.map(r => r.layer));
+        newPartIds.splice(mergedIdx, 1, ...replacements.map(r => r.partId));
+      }
 
       return { ...prev, layers: newLayers, partIds: newPartIds };
     });
@@ -2047,7 +2049,7 @@ export default function CanvasViewport({
           onCancel={handleWizardCancel}
           onComplete={handleWizardComplete}
           onBack={handleWizardBack}
-          onSplitArms={handleWizardSplitArms}
+          onSplitParts={handleWizardSplitParts}
           onUpdatePsd={handleWizardUpdatePsd}
           onReorder={handleWizardReorder}
           onApplyRig={handleWizardApplyRig}

@@ -19,7 +19,7 @@ export default function PsdImportWizard({
   onCancel,
   onComplete,
   onBack,
-  onSplitArms,  // (rightLayer, leftLayer) → void  — replaces merged handwear with two layers
+  onSplitParts,  // (splits Array<{mergedIdx, rightLayer, leftLayer}>) → void
   onReorder,
   onApplyRig,
   onUpdatePsd,
@@ -52,11 +52,17 @@ export default function PsdImportWizard({
     : [];
   const tooFew = matchCount < 4;
 
-  /* ── Detect merged arms (handwear present but no handwear-l or handwear-r) ── */
-  const hasHandwear = effectiveLayers.some(l => matchTag(l.name) === 'handwear');
-  const hasHandwearL = effectiveLayers.some(l => matchTag(l.name) === 'handwear-l');
-  const hasHandwearR = effectiveLayers.some(l => matchTag(l.name) === 'handwear-r');
-  const armsMerged = hasHandwear && !hasHandwearL && !hasHandwearR;
+  /* ── Detect merged parts (left/right present but no -l or -r) ── */
+  const SPLIT_CANDIDATES = ['handwear', 'legwear', 'footwear', 'irides', 'eyebrow', 'eyewhite', 'eyelash', 'ears'];
+  
+  const mergedTagsToSplit = effectiveLayers ? SPLIT_CANDIDATES.filter(baseTag => {
+    const hasBase = effectiveLayers.some(l => matchTag(l.name) === baseTag);
+    const hasL = effectiveLayers.some(l => matchTag(l.name) === `${baseTag}-l`);
+    const hasR = effectiveLayers.some(l => matchTag(l.name) === `${baseTag}-r`);
+    return hasBase && !hasL && !hasR;
+  }) : [];
+
+  const partsMerged = mergedTagsToSplit.length > 0;
 
   /* ── Handle tag override dropdown change ────────────────────────────────── */
   const handleTagChange = useCallback((layerName, value) => {
@@ -73,53 +79,61 @@ export default function PsdImportWizard({
 
   const executeSplit = useCallback(() => {
     setSplitError('');
-    // Find the merged handwear layer (using effectiveLayers so overrides are respected)
-    const mergedIdx = effectiveLayers.findIndex(l => matchTag(l.name) === 'handwear');
-    if (mergedIdx === -1) return false;
+    const failedMsgs = [];
+    const splits = [];
 
-    const mergedLayer = effectiveLayers[mergedIdx];
-    const result = splitLayerLR(mergedLayer, psdW, psdH);
+    for (const baseTag of mergedTagsToSplit) {
+      const mergedIdx = effectiveLayers.findIndex(l => matchTag(l.name) === baseTag);
+      if (mergedIdx === -1) continue;
 
-    if (!result.right && !result.left) {
-      const errorMsg = `Could not find two separate components in the handwear layer ` +
-        `(found ${result.componentCount} component${result.componentCount !== 1 ? 's' : ''}). ` +
-        `The layer may be a single connected shape.`;
+      const mergedLayer = effectiveLayers[mergedIdx];
+      const result = splitLayerLR(mergedLayer, psdW, psdH);
 
-      setSplitError(errorMsg + " — continuing without split.");
+      if (!result.right && !result.left) {
+        failedMsgs.push(baseTag);
+        continue;
+      }
 
-      toast({
-        title: "Split Failed",
-        description: errorMsg,
-        variant: "destructive",
-      });
+      const rightLayer = result.right ? {
+        ...mergedLayer,
+        name: `${baseTag}-r`,
+        imageData: result.right.imageData,
+        x: result.right.x,
+        y: result.right.y,
+        width: result.right.width,
+        height: result.right.height,
+      } : null;
 
-      return false;
+      const leftLayer = result.left ? {
+        ...mergedLayer,
+        name: `${baseTag}-l`,
+        imageData: result.left.imageData,
+        x: result.left.x,
+        y: result.left.y,
+        width: result.left.width,
+        height: result.left.height,
+      } : null;
+
+      splits.push({ mergedIdx, rightLayer, leftLayer });
     }
 
-    // Build replacement layers
-    const rightLayer = result.right ? {
-      ...mergedLayer,
-      name: 'handwear-r',
-      imageData: result.right.imageData,
-      x: result.right.x,
-      y: result.right.y,
-      width: result.right.width,
-      height: result.right.height,
-    } : null;
+    if (splits.length > 0) {
+      onSplitParts(splits);
+    }
 
-    const leftLayer = result.left ? {
-      ...mergedLayer,
-      name: 'handwear-l',
-      imageData: result.left.imageData,
-      x: result.left.x,
-      y: result.left.y,
-      width: result.left.width,
-      height: result.left.height,
-    } : null;
+    if (failedMsgs.length > 0) {
+      const errorMsg = `Could not separate: ${failedMsgs.join(', ')}. The layer may be a single connected shape. Continuing without splitting them.`;
+      setSplitError(errorMsg);
+      toast({
+        title: "Partial Split Info",
+        description: errorMsg,
+        variant: "default",
+      });
+      return splits.length > 0;
+    }
 
-    onSplitArms(mergedIdx, rightLayer, leftLayer);
     return true;
-  }, [effectiveLayers, psdW, psdH, onSplitArms]);
+  }, [effectiveLayers, mergedTagsToSplit, psdW, psdH, onSplitParts, toast]);
 
   /* ── Handle manual rigging (bounding-box heuristic) ────────────────────── */
   const handleRigManually = useCallback(async () => {
@@ -214,7 +228,7 @@ export default function PsdImportWizard({
 
     // When user clicks Continue, enter the reorder step
     const handleContinue = () => {
-      if (armsMerged && performSplit) {
+      if (partsMerged && performSplit) {
         const ok = executeSplit();
         if (!ok && splitError) return;
       }
@@ -310,8 +324,8 @@ export default function PsdImportWizard({
             </p>
           )}
 
-          {/* Split arms toggle (only if merged arms detected) */}
-          {armsMerged && (
+          {/* Split parts toggle (only if merged parts detected) */}
+          {partsMerged && (
             <div className="space-y-2">
               <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
                 <input
@@ -320,7 +334,7 @@ export default function PsdImportWizard({
                   onChange={e => setPerformSplit(e.target.checked)}
                   className="w-3.5 h-3.5 rounded border border-border"
                 />
-                <span>Split merged arms (recommended)</span>
+                <span>Split merged parts (recommended)</span>
               </label>
               {splitError && (
                 <div className="flex items-start gap-2 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2">
