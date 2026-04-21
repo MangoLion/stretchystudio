@@ -3726,6 +3726,25 @@ export async function generateCmo3(input) {
   // 6. BUILD main.xml
   // ==================================================================
 
+  // ── Root Parameter Group entity (v14 required) ──
+  // Must be created BEFORE the shared section is flushed so it gets included.
+  // Its `_childGuids` lists every parameter we've emitted — matches the
+  // "flat" hierarchy Cubism uses by default for new projects. The actual
+  // <CParameterGroup xs.n="rootParameterGroup" xs.ref="..."> reference is
+  // written later in the end-of-CModelSource block (section 6 tail).
+  const [rootPgNode, pidRootPgEntity] = x.shared('CParameterGroup');
+  x.sub(rootPgNode, 's', { 'xs.n': 'name' }).text = 'Root Parameter Group';
+  x.sub(rootPgNode, 's', { 'xs.n': 'description' });
+  x.sub(rootPgNode, 'b', { 'xs.n': 'folderIsOpened' }).text = 'false';
+  x.subRef(rootPgNode, 'CParameterGroupGuid', pidParamGroupGuid, { 'xs.n': 'guid' });
+  x.sub(rootPgNode, 'null', { 'xs.n': 'parentGroupGuid' });
+  const pgChildList = x.sub(rootPgNode, 'carray_list', {
+    'xs.n': '_childGuids', count: String(paramDefs.length),
+  });
+  for (const pd of paramDefs) {
+    x.subRef(pgChildList, 'CParameterGuid', pd.pid);
+  }
+
   const root = x.el('root', { fileFormatVersion: '402030000' });
 
   // Shared section
@@ -3834,19 +3853,68 @@ export async function generateCmo3(input) {
   // Root part ref
   x.subRef(model, 'CPartSource', rootPart.pid, { 'xs.n': 'rootPart' });
 
-  // Parameter group set
+  // ── Parameter group set — refs the root group entity created above ──
+  // v14 CModelSource requires a `rootParameterGroup` pointer to a real
+  // CParameterGroup entity; that entity is created+populated in section 6's
+  // preamble (right before the shared section is flushed). Here we just emit
+  // the refs.
   const pgSet = x.sub(model, 'CParameterGroupSet', { 'xs.n': 'parameterGroupSet' });
-  x.sub(pgSet, 'carray_list', { 'xs.n': '_groups', count: '0' });
+  const pgGroups = x.sub(pgSet, 'carray_list', { 'xs.n': '_groups', count: '1' });
+  x.subRef(pgGroups, 'CParameterGroup', pidRootPgEntity);
 
-  // Model info
+  // v14 required: rootParameterGroup pointer (entity ref, not guid ref)
+  x.subRef(model, 'CParameterGroup', pidRootPgEntity, { 'xs.n': 'rootParameterGroup' });
+
+  // ── Model info (with inner _effectParameterGroups required in v14) ──
   const miInfo = x.sub(model, 'CModelInfo', { 'xs.n': 'modelInfo' });
   x.sub(miInfo, 'f', { 'xs.n': 'pixelsPerUnit' }).text = '1.0';
   const origin = x.sub(miInfo, 'CPoint', { 'xs.n': 'originInPixels' });
   x.sub(origin, 'i', { 'xs.n': 'x' }).text = '0';
   x.sub(origin, 'i', { 'xs.n': 'y' }).text = '0';
+  const epg = x.sub(miInfo, 'CEffectParameterGroups', { 'xs.n': '_effectParameterGroups' });
+  x.sub(epg, 'hash_map', { 'xs.n': '_parameterGroups', count: '0', keyType: 'string' });
+
+  // ── modelOptions (empty hash_map — we emit no legacy Cubism 2→3 mappings) ──
+  x.sub(model, 'hash_map', { 'xs.n': 'modelOptions', count: '0', keyType: 'string' });
+
+  // ── Preview icons (required by v14; contents are Editor UI thumbnails) ──
+  // We register 16×16 / 32×32 / 64×64 blank PNGs in the CAFF file list below
+  // and reference them by path here.
+  const iconSpecs = [
+    { field: '_icon64', size: 64, path: 'cmo3_icon_64.png' },
+    { field: '_icon32', size: 32, path: 'cmo3_icon_32.png' },
+    { field: '_icon16', size: 16, path: 'cmo3_icon_16.png' },
+  ];
+  for (const ic of iconSpecs) {
+    const iconNode = x.sub(model, 'CImageIcon', { 'xs.n': ic.field });
+    const img = x.sub(iconNode, 'CWritableImage', {
+      'xs.n': 'image', width: String(ic.size), height: String(ic.size), type: 'INT_ARGB',
+    });
+    x.sub(img, 'file', { 'xs.n': 'image', path: ic.path });
+  }
+
+  // ── gameMotionSet / ModelViewerSetting / CGuidesSetting (all empty stubs) ──
+  const gms = x.sub(model, 'CGameMotionSet', { 'xs.n': 'gameMotionSet' });
+  x.sub(gms, 'carray_list', { 'xs.n': 'gameMotions', count: '0' });
+  x.sub(gms, 'carray_list', { 'xs.n': 'gameMotionGroups', count: '0' });
+
+  const mvs = x.sub(model, 'ModelViewerSetting', { 'xs.n': 'modelViewerSetting' });
+  x.sub(mvs, 'array_list', { 'xs.n': 'trackCursorSettings', count: '0' });
+
+  const guides = x.sub(model, 'CGuidesSetting', { 'xs.n': 'guides' });
+  x.sub(guides, 'carray_list', { 'xs.n': 'guidesModeling', count: '0' });
 
   x.sub(model, 'i', { 'xs.n': 'targetVersionNo' }).text = '3000';
   x.sub(model, 'i', { 'xs.n': 'latestVersionOfLastModelerNo' }).text = '5000000';
+
+  const brushSet = x.sub(model, 'CArtPathBrushSetting', { 'xs.n': 'artPathBrushesSetting' });
+  x.sub(brushSet, 'carray_list', { 'xs.n': 'brushes', count: '0' });
+
+  // CRandomPoseSettingManager with zero _settings — an empty manager is
+  // sufficient for parsing; the Editor lets users add poses after load.
+  const randomPose = x.sub(model, 'CRandomPoseSettingManager', { 'xs.n': 'randomPoseSetting' });
+  x.sub(randomPose, 'array_list', { 'xs.n': '_settings', count: '0' });
+  x.sub(randomPose, 'i', { 'xs.n': 'currentIndex' }).text = '0';
 
   // ==================================================================
   // 7. SERIALIZE + PACK INTO CAFF
@@ -3855,8 +3923,18 @@ export async function generateCmo3(input) {
   const xmlStr = x.serialize(root, VERSION_PIS, IMPORT_PIS);
   const xmlBytes = new TextEncoder().encode(xmlStr);
 
-  // Build CAFF file list: PNG textures + main.xml
+  // Build CAFF file list: PNG textures + icons + main.xml
   const caffFiles = [];
+  // v14 preview icons — referenced by CImageIcon fields in the XML above.
+  for (const sz of [64, 32, 16]) {
+    caffFiles.push({
+      path: `cmo3_icon_${sz}.png`,
+      content: buildRawPng(sz, sz),
+      tag: '',
+      obfuscated: true,
+      compress: COMPRESS_RAW,
+    });
+  }
   for (const pm of perMesh) {
     caffFiles.push({
       path: pm.pngPath,

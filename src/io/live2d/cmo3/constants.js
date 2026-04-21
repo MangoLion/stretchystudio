@@ -15,13 +15,18 @@ export const VERSION_PIS = [
   ['KeyformGridSource', '1'],
   ['CParameterGroup', '4'],
   ['SerializeFormatVersion', '2'],
-  ['CModelSource', '4'], // v4 avoids rootParameterGroup/modelOptions/gameMotionSet NPEs
+  // v14 enables physicsSettingsSourceSet parsing. The v4-era workaround
+  // (which sidestepped rootParameterGroup/modelOptions/gameMotionSet NPEs by
+  // claiming an older schema) is superseded — we now emit those fields
+  // explicitly at the end of CModelSource (see cmo3writer end-of-model block).
+  ['CModelSource', '14'],
   ['CFloatColor', '1'],
   ['CLabelColor', '0'],
   ['CModelImage', '3'],
 ];
 
 export const IMPORT_PIS = [
+  'com.live2d.cubism.doc.gameData.motions.CGameMotionSet',
   'com.live2d.cubism.doc.gameData.physics.CPhysicsController$CPhysicsSourceType',
   'com.live2d.cubism.doc.gameData.physics.CPhysicsInput',
   'com.live2d.cubism.doc.gameData.physics.CPhysicsOutput',
@@ -30,6 +35,9 @@ export const IMPORT_PIS = [
   'com.live2d.cubism.doc.gameData.physics.CPhysicsVertex',
   'com.live2d.cubism.doc.model.ACForm',
   'com.live2d.cubism.doc.model.ACParameterControllableSource',
+  'com.live2d.cubism.doc.model.CEffectParameterGroups',
+  'com.live2d.cubism.doc.model.CLabelColor',
+  'com.live2d.cubism.doc.model.CLabelColorType',
   'com.live2d.cubism.doc.model.CModelInfo',
   'com.live2d.cubism.doc.model.CModelSource',
   'com.live2d.cubism.doc.model.affecter.CAffecterSourceSet',
@@ -47,6 +55,7 @@ export const IMPORT_PIS = [
   'com.live2d.cubism.doc.model.drawable.TextureState',
   'com.live2d.cubism.doc.model.drawable.artMesh.CArtMeshForm',
   'com.live2d.cubism.doc.model.drawable.artMesh.CArtMeshSource',
+  'com.live2d.cubism.doc.model.drawable.artPath.Line.CArtPathBrushSetting',
   'com.live2d.cubism.doc.model.extension.ACExtension',
   'com.live2d.cubism.doc.model.extension.editableMesh.CEditableMeshExtension',
   'com.live2d.cubism.doc.model.extension.meshGenerator.CMeshGeneratorExtension',
@@ -72,6 +81,7 @@ export const IMPORT_PIS = [
   'com.live2d.cubism.doc.model.interpolator.extendedInterpolation.ExtendedInterpolationType',
   'com.live2d.cubism.doc.model.morphTarget.KeyFormMorphTargetSet',
   'com.live2d.cubism.doc.model.morphTarget.MorphTargetBlendWeightConstraintSet',
+  'com.live2d.cubism.doc.model.motionSync.CMotionSyncSettingSourceSet',
   'com.live2d.cubism.doc.model.options.edition.EditorEdition',
   'com.live2d.cubism.doc.model.param.CParameterSource',
   'com.live2d.cubism.doc.model.param.CParameterSource$Type',
@@ -81,6 +91,10 @@ export const IMPORT_PIS = [
   'com.live2d.cubism.doc.model.parts.CPartForm',
   'com.live2d.cubism.doc.model.parts.CPartSource',
   'com.live2d.cubism.doc.model.parts.CPartSourceSet',
+  'com.live2d.cubism.doc.model.randomPose.CRandomPoseSetting',
+  'com.live2d.cubism.doc.model.randomPose.CRandomPoseSetting$CRandomPoseGroupData',
+  'com.live2d.cubism.doc.model.randomPose.CRandomPoseSetting$CRandomPoseParamData',
+  'com.live2d.cubism.doc.model.randomPose.CRandomPoseSettingManager',
   'com.live2d.cubism.doc.model.texture.CTextureManager',
   'com.live2d.cubism.doc.model.texture.LayeredImageWrapper',
   'com.live2d.cubism.doc.model.texture.TextureImageGroup',
@@ -94,6 +108,8 @@ export const IMPORT_PIS = [
   'com.live2d.cubism.doc.resources.CLayerIdentifier',
   'com.live2d.cubism.doc.resources.CLayeredImage',
   'com.live2d.cubism.doc.resources.LayerSet',
+  'com.live2d.cubism.doc.modeling.ui.guide.CGuidesSetting',
+  'com.live2d.cubism.doc.modeling.ui.viewer.ModelViewerSetting',
   'com.live2d.doc.CoordType',
   'com.live2d.graphics.CImageCanvas',
   'com.live2d.graphics.CImageResource',
