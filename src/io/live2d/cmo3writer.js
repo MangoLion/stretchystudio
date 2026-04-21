@@ -41,6 +41,7 @@ import {
 } from './cmo3/deformerEmit.js';
 import { emitNeckWarp, emitFaceRotation } from './cmo3/bodyRig.js';
 import { emitFaceParallax } from './cmo3/faceParallax.js';
+import { emitPhysicsSettings } from './cmo3/physics.js';
 
 // ---------- Main generator ----------
 
@@ -97,6 +98,9 @@ export async function generateCmo3(input) {
     animations = [],
     modelName = 'StretchyStudio Export',
     generateRig = false,
+    // Physics: emits CPhysicsSettingsSourceSet (hair/skirt pendulums). Off by
+    // default when generateRig is off — physics references rig-only params.
+    generatePhysics = generateRig,
   } = input;
 
   // ── Phase 0 diagnostic log (only populated when generateRig is on) ──
@@ -216,6 +220,9 @@ export async function generateCmo3(input) {
       { id: 'ParamHairFront',  name: 'Hair Front',    min: -1,  max: 1,  def: 0 },
       { id: 'ParamHairSide',   name: 'Hair Side',     min: -1,  max: 1,  def: 0 },
       { id: 'ParamHairBack',   name: 'Hair Back',     min: -1,  max: 1,  def: 0 },
+      // Physics-driven clothing. Warp bindings on matching tags (bottomwear)
+      // live in TAG_PARAM_BINDINGS; physics rules live in cmo3/physics.js.
+      { id: 'ParamSkirt',      name: 'Skirt',         min: -1,  max: 1,  def: 0 },
     ];
     for (const sp of standardParams) {
       if (paramDefs.find(p => p.id === sp.id)) continue;
@@ -1764,6 +1771,7 @@ export async function generateCmo3(input) {
   const pidParamEyeROpen   = paramDefs.find(p => p.id === 'ParamEyeROpen')?.pid;
   const pidParamHairFront  = paramDefs.find(p => p.id === 'ParamHairFront')?.pid;
   const pidParamHairBack   = paramDefs.find(p => p.id === 'ParamHairBack')?.pid;
+  const pidParamSkirt      = paramDefs.find(p => p.id === 'ParamSkirt')?.pid;
   // Face parallax (Session 19) — drive Face Rotation (AngleZ) + 7 face parallax warps (AngleX × AngleY).
   const pidParamAngleX     = paramDefs.find(p => p.id === 'ParamAngleX')?.pid;
   const pidParamAngleY     = paramDefs.find(p => p.id === 'ParamAngleY')?.pid;
@@ -1807,6 +1815,29 @@ export async function generateCmo3(input) {
             const idx = (r * gW + c) * 2;
             pos[idx]     += k * 0.10 * gxS * swayW;
             pos[idx + 1] += k * 0.025 * gyS * curlW;
+          }
+        }
+        return pos;
+      },
+    }],
+    // ── Skirt sway (Session 29): hem (bottom row) swings, waist (top row) pinned.
+    // Cubic frac³ gradient mirrors hair behavior so attachment at the waist is
+    // rigid while fabric flaring at the hem feels loose. Magnitude kept small
+    // (6% X / 2% Y of grid span) — the visual effect is subtle but visible at
+    // BodyAngleX/Z extremes; physics output param amplifies via pendulum lag.
+    ['bottomwear', {
+      bindings: [{ pid: pidParamSkirt, keys: [-1, 0, 1], desc: 'ParamSkirt' }],
+      shiftFn: (grid, gW, gH, [k], gxS, gyS) => {
+        const pos = new Float64Array(grid);
+        if (k === 0) return pos;
+        for (let r = 0; r < gH; r++) {
+          const frac = r / (gH - 1);          // 0=waist(top), 1=hem(bottom)
+          const swayW = frac * frac * frac;
+          const curlW = frac * frac * frac;
+          for (let c = 0; c < gW; c++) {
+            const idx = (r * gW + c) * 2;
+            pos[idx]     += k * 0.06 * gxS * swayW;
+            pos[idx + 1] += k * 0.02 * gyS * curlW;
           }
         }
         return pos;
@@ -3788,6 +3819,16 @@ export async function generateCmo3(input) {
   });
   for (const ps of allPartSources) {
     x.subRef(partSources, 'CPartSource', ps.pid);
+  }
+
+  // Physics settings — pendulum simulations driving hair/skirt params.
+  // Placement matches Hiyori's main.xml (between CPartSourceSet and the
+  // rootPart ref). Rules self-skip when their output param or required tag
+  // is absent, so turning off generateRig cleanly zeroes the set.
+  if (generatePhysics) {
+    emitPhysicsSettings(x, {
+      parent: model, paramDefs, meshes, rigDebugLog,
+    });
   }
 
   // Root part ref

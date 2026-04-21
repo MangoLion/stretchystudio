@@ -415,6 +415,24 @@ as numeric tables, not bundled assets, so legally safe).
     on the warp parallel to the clipped child's warp.
   See `SESSION_28_FINDINGS.md`.
 
+- **Session 29 (2026-04-21) — first physics pass.** Three starter rules
+  emit as `CPhysicsSettingsSourceSet` between `CPartSourceSet` and the
+  rootPart ref, matching Hiyori's layout:
+  - `PhysicsSetting1` Hair Front → `ParamHairFront` (pendulum y=3,
+    mobility=0.95, delay=0.9)
+  - `PhysicsSetting2` Hair Back → `ParamHairBack` (y=15, delay=0.8)
+  - `PhysicsSetting3` Skirt → `ParamSkirt` (y=10, delay=0.6)
+  Each rule self-skips if its output param or `requireTag` isn't
+  present. A new `bottomwear` warp binding reads `ParamSkirt`
+  (cubic-frac gradient, hem sways 6% X / 2% Y) so the physics output
+  actually moves geometry. New file: `src/io/live2d/cmo3/physics.js`
+  (+ `PHYSICS_RULES` table for extension). New option
+  `generatePhysics` (defaults to `generateRig`). IMPORT_PIS extended
+  with 9 `CPhysics*` FQCNs. Verification: 48-check suite in
+  `scripts/verify_physics.mjs` + 22 KB round-trip smoke test.
+  See `SESSION_29_FINDINGS.md`. Pending: user validation in Cubism
+  Editor.
+
 ## Future directions (not scheduled)
 
 ### Eye-axis-aligned closure arcs (for drawn-in head tilts)

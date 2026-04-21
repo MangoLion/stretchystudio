@@ -22,6 +22,12 @@ export const VERSION_PIS = [
 ];
 
 export const IMPORT_PIS = [
+  'com.live2d.cubism.doc.gameData.physics.CPhysicsController$CPhysicsSourceType',
+  'com.live2d.cubism.doc.gameData.physics.CPhysicsInput',
+  'com.live2d.cubism.doc.gameData.physics.CPhysicsOutput',
+  'com.live2d.cubism.doc.gameData.physics.CPhysicsSettingsSource',
+  'com.live2d.cubism.doc.gameData.physics.CPhysicsSettingsSourceSet',
+  'com.live2d.cubism.doc.gameData.physics.CPhysicsVertex',
   'com.live2d.cubism.doc.model.ACForm',
   'com.live2d.cubism.doc.model.ACParameterControllableSource',
   'com.live2d.cubism.doc.model.CModelInfo',
@@ -56,6 +62,7 @@ export const IMPORT_PIS = [
   'com.live2d.cubism.doc.model.id.CDrawableId',
   'com.live2d.cubism.doc.model.id.CParameterId',
   'com.live2d.cubism.doc.model.id.CPartId',
+  'com.live2d.cubism.doc.model.id.CPhysicsSettingId',
   'com.live2d.cubism.doc.model.interpolator.InterpolationType',
   'com.live2d.cubism.doc.model.interpolator.KeyOnParameter',
   'com.live2d.cubism.doc.model.interpolator.KeyformBindingSource',
@@ -131,6 +138,8 @@ export const IMPORT_PIS = [
   'com.live2d.type.CParameterGroupGuid',
   'com.live2d.type.CParameterGuid',
   'com.live2d.type.CPartGuid',
+  'com.live2d.type.CPhysicsDataGuid',
+  'com.live2d.type.CPhysicsSettingsGuid',
   'com.live2d.type.CPoint',
   'com.live2d.type.CRect',
   'com.live2d.type.CSize',
