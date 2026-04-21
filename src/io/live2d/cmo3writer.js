@@ -3821,6 +3821,12 @@ export async function generateCmo3(input) {
   // "flat" hierarchy Cubism uses by default for new projects. The actual
   // <CParameterGroup xs.n="rootParameterGroup" xs.ref="..."> reference is
   // written later in the end-of-CModelSource block (section 6 tail).
+  //
+  // The CParameterGroupId is a separate ID type (alongside CParameterGroupGuid)
+  // that Cubism's Random Pose Setting dialog uses to key its group tree. Without
+  // it + labelColor, the dialog renders blank because it can't resolve the
+  // group's display identity.
+  const [, pidRootPgId] = x.shared('CParameterGroupId', { idstr: 'ParamGroupRoot' });
   const [rootPgNode, pidRootPgEntity] = x.shared('CParameterGroup');
   x.sub(rootPgNode, 's', { 'xs.n': 'name' }).text = 'Root Parameter Group';
   x.sub(rootPgNode, 's', { 'xs.n': 'description' });
@@ -3833,6 +3839,11 @@ export async function generateCmo3(input) {
   for (const pd of paramDefs) {
     x.subRef(pgChildList, 'CParameterGuid', pd.pid);
   }
+  x.subRef(rootPgNode, 'CParameterGroupId', pidRootPgId, { 'xs.n': 'id' });
+  const rootPgLbl = x.sub(rootPgNode, 'CLabelColor', {
+    'xs.n': 'labelColor', customizedColorInt: '-1',
+  });
+  x.sub(rootPgLbl, 'CLabelColorType', { 'xs.n': 'labelType', v: 'UNDEFINED' });
 
   const root = x.el('root', { fileFormatVersion: '402030000' });
 
@@ -4016,8 +4027,12 @@ export async function generateCmo3(input) {
   const rpKeys = x.sub(rpSetting, 'array_list', {
     'xs.n': 'parameters.keys', count: String(paramDefs.length),
   });
+  // Hiyori's pattern: parameters.keys uses INLINE CParameterId with idstr,
+  // not xs.ref to shared entries — the dialog populates from idstr directly.
+  // (groups.keys further down DOES use xs.ref — those two array_lists read
+  // through different code paths in Cubism.)
   for (const pd of paramDefs) {
-    x.subRef(rpKeys, 'CParameterId', pd.pidId);
+    x.sub(rpKeys, 'CParameterId', { idstr: pd.id });
   }
   const rpVals = x.sub(rpSetting, 'array_list', {
     'xs.n': 'parameters.values', count: String(paramDefs.length),
@@ -4026,8 +4041,18 @@ export async function generateCmo3(input) {
     const entry = x.sub(rpVals, 'CRandomPoseParamData');
     x.sub(entry, 'b', { 'xs.n': 'isEnable' }).text = 'true';
   }
-  x.sub(rpSetting, 'array_list', { 'xs.n': 'groups.keys', count: '0' });
-  x.sub(rpSetting, 'array_list', { 'xs.n': 'groups.values', count: '0' });
+  // Groups: a flat hierarchy with just the root group. Without at least one
+  // entry here, Cubism's dialog fails to render the param tree (even though
+  // parameters.keys is populated).
+  const rpGroupKeys = x.sub(rpSetting, 'array_list', {
+    'xs.n': 'groups.keys', count: '1',
+  });
+  x.subRef(rpGroupKeys, 'CParameterGroupId', pidRootPgId);
+  const rpGroupVals = x.sub(rpSetting, 'array_list', {
+    'xs.n': 'groups.values', count: '1',
+  });
+  const rpGroupData = x.sub(rpGroupVals, 'CRandomPoseGroupData');
+  x.sub(rpGroupData, 'b', { 'xs.n': 'isExpand' }).text = 'true';
   x.sub(randomPose, 'i', { 'xs.n': 'currentIndex' }).text = '0';
 
   // ==================================================================
