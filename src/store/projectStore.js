@@ -51,12 +51,8 @@ export const useProjectStore = create((set) => ({
         transform:  { x, y, rotation, scaleX, scaleY, pivotX, pivotY },
         meshOpts:   { alphaThreshold, smoothPasses, gridSpacing, edgePadding, numEdgePoints } | null,
         mesh:       { vertices, uvs, triangles, edgeIndices } | null,
-        blendShapes: [{ id, name, deltas: [{dx, dy}], pinDeltas: [{pinId, dx, dy}] | null }] | null,
+        blendShapes: [{ id, name, deltas: [{dx, dy}] }] | null,
         blendShapeValues: { [shapeId]: number (0–1) },             // staging-mode influences
-        puppetWarp: {
-          enabled: boolean,
-          pins: [{ id, restX, restY, x, y }],  // image-space coords; x/y = current, rest = original
-        } | null,
       }
 
       Node schema (type === 'group'):
@@ -238,7 +234,6 @@ export const useProjectStore = create((set) => ({
       for (const node of nodes) {
         if (node.blendShapes === undefined) node.blendShapes = [];
         if (node.blendShapeValues === undefined) node.blendShapeValues = {};
-        if (node.puppetWarp === undefined) node.puppetWarp = null;
       }
       state.project.nodes = nodes;
       state.project.animations = projectData.animations ?? [];
@@ -255,51 +250,6 @@ export const useProjectStore = create((set) => ({
   updateCanvas: (partial) => set(produce((state) => {
     state.hasUnsavedChanges = true;
     Object.assign(state.project.canvas, partial);
-  })),
-
-  /** Enable or disable puppet warp on a part node */
-  setPuppetWarpEnabled: (nodeId, enabled) => set(produce((state) => {
-    state.hasUnsavedChanges = true;
-    const node = state.project.nodes.find(n => n.id === nodeId);
-    if (!node) return;
-    if (enabled && !node.puppetWarp) {
-      node.puppetWarp = { enabled: true, pins: [] };
-    } else if (node.puppetWarp) {
-      node.puppetWarp.enabled = enabled;
-    }
-    state.versionControl.geometryVersion++;
-  })),
-
-  /** Add a pin at image-space rest position */
-  addPuppetPin: (nodeId, restX, restY) => set(produce((state) => {
-    state.hasUnsavedChanges = true;
-    const node = state.project.nodes.find(n => n.id === nodeId);
-    if (!node?.puppetWarp) return;
-    node.puppetWarp.pins.push({
-      id: uid(),
-      restX, restY,
-      x: restX, y: restY,
-    });
-    state.versionControl.geometryVersion++;
-  })),
-
-  /** Remove a pin by id */
-  removePuppetPin: (nodeId, pinId) => set(produce((state) => {
-    state.hasUnsavedChanges = true;
-    const node = state.project.nodes.find(n => n.id === nodeId);
-    if (!node?.puppetWarp) return;
-    node.puppetWarp.pins = node.puppetWarp.pins.filter(p => p.id !== pinId);
-    state.versionControl.geometryVersion++;
-  })),
-
-  /** Move a pin's current position (staging mode — bakes directly into node) */
-  setPuppetPinPosition: (nodeId, pinId, x, y) => set(produce((state) => {
-    state.hasUnsavedChanges = true;
-    const node = state.project.nodes.find(n => n.id === nodeId);
-    const pin = node?.puppetWarp?.pins?.find(p => p.id === pinId);
-    if (!pin) return;
-    pin.x = x; pin.y = y;
-    state.versionControl.geometryVersion++;
   })),
 
   /**

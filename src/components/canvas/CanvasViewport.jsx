@@ -23,7 +23,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { computeWorldMatrices, mat3Inverse, mat3Identity } from '@/renderer/transforms';
 import { retriangulate } from '@/mesh/generate';
-import { applyPuppetWarp } from '@/mesh/puppetWarp';
 import { GizmoOverlay } from '@/components/canvas/GizmoOverlay';
 import { saveProject, loadProject } from '@/io/projectFile';
 
@@ -366,34 +365,6 @@ export default function CanvasViewport({
           if (!existing.mesh_verts) poseOverrides.set(node.id, { ...existing, mesh_verts: blendedVerts });
         }
 
-        // Apply puppet warp — deform mesh using MLS-rigid based on pin positions
-        for (const node of projectRef.current.nodes) {
-          if (node.type !== 'part' || !node.mesh || !node.puppetWarp?.enabled || !node.puppetWarp.pins.length) continue;
-
-          const draft = anim.draftPose.get(node.id);
-          const kfOv = poseOverrides?.get(node.id);
-
-          // Effective pins: draft > keyframe > base
-          // Keyframe values only store {id, x, y} — merge restX/restY from base pins
-          const basePins = node.puppetWarp.pins;
-          const rawPins = draft?.puppet_pins ?? kfOv?.puppet_pins ?? null;
-          const effectivePins = rawPins
-            ? rawPins.map(p => {
-                const base = basePins.find(b => b.id === p.id);
-                return { restX: base?.restX ?? p.x, restY: base?.restY ?? p.y, x: p.x, y: p.y };
-              })
-            : basePins;
-          if (!effectivePins.length) continue;
-
-          // Input vertices: already blended (from blend shapes above) or base mesh
-          const inputVerts = (kfOv?.mesh_verts ?? node.mesh.vertices).map(v => ({ x: v.x ?? v.restX, y: v.y ?? v.restY }));
-          const warpedVerts = applyPuppetWarp(inputVerts, effectivePins);
-
-          if (!poseOverrides) poseOverrides = new Map();
-          const existing = poseOverrides.get(node.id) ?? {};
-          poseOverrides.set(node.id, { ...existing, mesh_verts: warpedVerts });
-        }
-
         // Upload mesh vertex overrides BEFORE drawing so the GPU buffers are
         // current for this frame's draw call. Previously uploads happened after
         // draw, causing a one-frame lag that made undo show the pre-undo mesh
@@ -594,31 +565,6 @@ export default function CanvasViewport({
             }
           }
 
-          // ── puppet_pins keyframe (puppet warp deformation) ──────────────────
-          if (node.type === 'part' && node.puppetWarp?.enabled) {
-            const hasPinDraft = draft?.puppet_pins !== undefined;
-            let pinTrack = animation.tracks.find(t => t.nodeId === nodeId && t.property === 'puppet_pins');
-
-            if (hasPinDraft || pinTrack) {
-              const pinValue = draft?.puppet_pins
-                ?? kfValues?.puppet_pins
-                ?? node.puppetWarp.pins.map(p => ({ id: p.id, x: p.x, y: p.y }));
-
-              const isNewPinTrack = !pinTrack;
-              if (!pinTrack) {
-                pinTrack = { nodeId, property: 'puppet_pins', keyframes: [] };
-                animation.tracks.push(pinTrack);
-
-                // Auto-insert rest-pose pin keyframe at startFrame
-                if (currentTimeMs > startMs) {
-                  const restPins = node.puppetWarp.pins.map(p => ({ id: p.id, x: p.restX, y: p.restY }));
-                  upsertKeyframe(pinTrack.keyframes, startMs, restPins, 'linear');
-                }
-              }
-
-              upsertKeyframe(pinTrack.keyframes, currentTimeMs, pinValue, 'linear');
-            }
-          }
         }
       });
 
@@ -1837,24 +1783,6 @@ export default function CanvasViewport({
                 }
                 return { x: bx, y: by };
               });
-            }
-          }
-
-          // 2. Puppet warp (applied on top of blended vertices if they exist)
-          if (node.puppetWarp?.enabled && node.puppetWarp.pins.length) {
-            const kfOv = poseOverrides.get(node.id);
-            const basePins = node.puppetWarp.pins;
-            const rawPins = kfOv?.puppet_pins ?? null;
-            const effectivePins = rawPins
-              ? rawPins.map(p => {
-                const base = basePins.find(b => b.id === p.id);
-                return { restX: base?.restX ?? p.x, restY: base?.restY ?? p.y, x: p.x, y: p.y };
-              })
-              : basePins;
-
-            if (effectivePins.length) {
-              const inputVerts = (currentMeshVerts ?? node.mesh.vertices).map(v => ({ x: v.x ?? v.restX, y: v.y ?? v.restY }));
-              currentMeshVerts = applyPuppetWarp(inputVerts, effectivePins);
             }
           }
 
