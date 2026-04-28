@@ -107,30 +107,94 @@ function uid() { return Math.random().toString(36).slice(2, 9); }
 
 /** Standard Live2D parameter definitions used by the liverig wizard step */
 const LIVE_RIG_PARAMS = [
-  { id: 'ParamAngleX',     name: 'Angle X',      group: 'Face',    min: -30, max:  30, default: 0 },
-  { id: 'ParamAngleY',     name: 'Angle Y',      group: 'Face',    min: -30, max:  30, default: 0 },
-  { id: 'ParamAngleZ',     name: 'Angle Z',      group: 'Face',    min: -30, max:  30, default: 0 },
-  { id: 'ParamEyeLOpen',   name: 'Eye L Open',   group: 'Eye',     min:   0, max:   1, default: 1 },
-  { id: 'ParamEyeROpen',   name: 'Eye R Open',   group: 'Eye',     min:   0, max:   1, default: 1 },
-  { id: 'ParamEyeBallX',   name: 'Eyeball X',    group: 'Eyeball', min:  -1, max:   1, default: 0 },
-  { id: 'ParamEyeBallY',   name: 'Eyeball Y',    group: 'Eyeball', min:  -1, max:   1, default: 0 },
-  { id: 'ParamBrowLY',     name: 'Brow L Y',     group: 'Brow',    min:  -1, max:   1, default: 0 },
-  { id: 'ParamBrowRY',     name: 'Brow R Y',     group: 'Brow',    min:  -1, max:   1, default: 0 },
-  { id: 'ParamMouthForm',  name: 'Mouth Form',   group: 'Mouth',   min:  -1, max:   1, default: 0 },
-  { id: 'ParamMouthOpenY', name: 'Mouth Open',   group: 'Mouth',   min:   0, max:   1, default: 0 },
-  { id: 'ParamBodyAngleX', name: 'Body Angle X', group: 'Body',    min: -10, max:  10, default: 0 },
-  { id: 'ParamBodyAngleY', name: 'Body Angle Y', group: 'Body',    min: -10, max:  10, default: 0 },
-  { id: 'ParamBodyAngleZ', name: 'Body Angle Z', group: 'Body',    min: -10, max:  10, default: 0 },
-  { id: 'ParamBreath',     name: 'Breath',       group: 'Body',    min:   0, max:   1, default: 0 },
-  { id: 'ParamHairFront',  name: 'Hair Front',   group: 'Hair',    min:  -1, max:   1, default: 0 },
-  { id: 'ParamHairSide',   name: 'Hair Side',    group: 'Hair',    min:  -1, max:   1, default: 0 },
-  { id: 'ParamHairBack',   name: 'Hair Back',    group: 'Hair',    min:  -1, max:   1, default: 0 },
+  // Face rotation
+  { id: 'ParamAngleX',      name: 'Angle X',        group: 'Face',    min: -30, max:  30, default: 0 },
+  { id: 'ParamAngleY',      name: 'Angle Y',        group: 'Face',    min: -30, max:  30, default: 0 },
+  { id: 'ParamAngleZ',      name: 'Angle Z',        group: 'Face',    min: -30, max:  30, default: 0 },
+  // Eyes
+  { id: 'ParamEyeLOpen',    name: 'Eye L Open',     group: 'Eye',     min:   0, max:   1, default: 1 },
+  { id: 'ParamEyeROpen',    name: 'Eye R Open',     group: 'Eye',     min:   0, max:   1, default: 1 },
+  { id: 'ParamEyeLSmile',   name: 'Eye L Smile',    group: 'Eye',     min:   0, max:   1, default: 0 },
+  { id: 'ParamEyeRSmile',   name: 'Eye R Smile',    group: 'Eye',     min:   0, max:   1, default: 0 },
+  { id: 'ParamEyeBallX',    name: 'Eyeball X',      group: 'Eyeball', min:  -1, max:   1, default: 0 },
+  { id: 'ParamEyeBallY',    name: 'Eyeball Y',      group: 'Eyeball', min:  -1, max:   1, default: 0 },
+  { id: 'ParamEyeBallForm', name: 'Eyeball Form',   group: 'Eyeball', min:  -1, max:   1, default: 0 },
+  { id: 'ParamTear',        name: 'Tear',           group: 'Eye',     min:   0, max:   2, default: 0 },
+  // Brows
+  { id: 'ParamBrowLY',      name: 'Brow L Y',       group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowRY',      name: 'Brow R Y',       group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowLX',      name: 'Brow L X',       group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowRX',      name: 'Brow R X',       group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowLAngle',  name: 'Brow L Angle',   group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowRAngle',  name: 'Brow R Angle',   group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowLForm',   name: 'Brow L Form',    group: 'Brow',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBrowRForm',   name: 'Brow R Form',    group: 'Brow',    min:  -1, max:   1, default: 0 },
+  // Mouth
+  { id: 'ParamMouthForm',   name: 'Mouth Form',     group: 'Mouth',   min:  -1, max:   1, default: 0 },
+  { id: 'ParamMouthOpenY',  name: 'Mouth Open',     group: 'Mouth',   min:   0, max:   1, default: 0 },
+  // Body rotation
+  { id: 'ParamBodyAngleX',  name: 'Body Angle X',   group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamBodyAngleY',  name: 'Body Angle Y',   group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamBodyAngleZ',  name: 'Body Angle Z',   group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamBreath',      name: 'Breath',         group: 'Body',    min:   0, max:   1, default: 0 },
+  // Arms
+  { id: 'ParamArmLA',       name: 'Arm L A',        group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamArmRA',       name: 'Arm R A',        group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamArmLB',       name: 'Arm L B',        group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamArmRB',       name: 'Arm R B',        group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamHandL',       name: 'Hand L',         group: 'Body',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamHandR',       name: 'Hand R',         group: 'Body',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamShoulderY',   name: 'Shoulder Y',     group: 'Body',    min: -10, max:  10, default: 0 },
+  { id: 'ParamBustX',       name: 'Bust X',         group: 'Body',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamBustY',       name: 'Bust Y',         group: 'Body',    min:  -1, max:   1, default: 0 },
+  // Hair
+  { id: 'ParamHairFront',   name: 'Hair Front',     group: 'Hair',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamHairSide',    name: 'Hair Side',      group: 'Hair',    min:  -1, max:   1, default: 0 },
+  { id: 'ParamHairBack',    name: 'Hair Back',      group: 'Hair',    min:  -1, max:   1, default: 0 },
+  // Global
+  { id: 'ParamCheek',       name: 'Cheek',          group: 'Global',  min:   0, max:   1, default: 0 },
+  { id: 'ParamHairFluffy',  name: 'Hair Fluffy',    group: 'Global',  min:   0, max:   1, default: 0 },
+  { id: 'ParamBaseX',       name: 'Base X',         group: 'Global',  min: -10, max:  10, default: 0 },
+  { id: 'ParamBaseY',       name: 'Base Y',         group: 'Global',  min: -10, max:  10, default: 0 },
 ];
 
-/** Warp deformers to auto-create: one per detectable bone role */
+/**
+ * Warp deformers to auto-create during rig generation.
+ *
+ * Two modes:
+ *   boneRole — wraps ALL children of the group node with that boneRole
+ *   layerTags + insideBoneRole — finds parts by tag within the named group's subtree
+ *
+ * Multiple specs may share the same paramSsId; the parameter receives a binding
+ * for each resulting warp deformer.
+ */
 const WARP_SPECS = [
-  { boneRole: 'head',  paramSsId: 'ParamAngleX',     warpName: 'FaceWarp', warpType: 'face_angle_x' },
-  { boneRole: 'torso', paramSsId: 'ParamBodyAngleX',  warpName: 'BodyWarp', warpType: 'body_angle_x' },
+  // ── Top-level: wrap all children of a bone group ──────────────────────────
+  { boneRole: 'head',  paramSsId: 'ParamAngleX',    warpName: 'FaceWarp',   warpType: 'face_angle_x' },
+  { boneRole: 'torso', paramSsId: 'ParamBodyAngleX', warpName: 'BodyWarp',   warpType: 'body_angle_x' },
+  { boneRole: 'neck',  paramSsId: 'ParamAngleX',    warpName: 'NeckWarp',   warpType: 'neck_follow'  },
+
+  // ── Nested: find tagged parts within the head subtree ─────────────────────
+  { layerTags: ['irides', 'irides-l', 'eyewhite', 'eyewhite-l', 'eyelash', 'eyelash-l'],
+    insideBoneRole: 'head', paramSsId: 'ParamEyeLOpen',   warpName: 'EyeLWarp',      warpType: 'eye_open'   },
+  { layerTags: ['irides-r', 'eyewhite-r', 'eyelash-r'],
+    insideBoneRole: 'head', paramSsId: 'ParamEyeROpen',   warpName: 'EyeRWarp',      warpType: 'eye_open'   },
+  { layerTags: ['mouth'],
+    insideBoneRole: 'head', paramSsId: 'ParamMouthOpenY', warpName: 'MouthWarp',     warpType: 'mouth_open' },
+  { layerTags: ['eyebrow', 'eyebrow-l'],
+    insideBoneRole: 'head', paramSsId: 'ParamBrowLY',     warpName: 'EyebrowLWarp',  warpType: 'brow_y'     },
+  { layerTags: ['eyebrow-r'],
+    insideBoneRole: 'head', paramSsId: 'ParamBrowRY',     warpName: 'EyebrowRWarp',  warpType: 'brow_y'     },
+  { layerTags: ['front hair'],
+    insideBoneRole: 'head', paramSsId: 'ParamHairFront',  warpName: 'HairFrontWarp', warpType: 'hair_sway'  },
+  { layerTags: ['back hair'],
+    insideBoneRole: 'head', paramSsId: 'ParamHairBack',   warpName: 'HairBackWarp',  warpType: 'hair_sway'  },
+
+  // ── Nested: tagged parts within body/root groups ───────────────────────────
+  { layerTags: ['topwear'],
+    insideBoneRole: 'torso', paramSsId: 'ParamBodyAngleX', warpName: 'TopWearWarp',    warpType: 'body_angle_x' },
+  { layerTags: ['bottomwear'],
+    insideBoneRole: 'root',  paramSsId: 'ParamBodyAngleX', warpName: 'BottomWearWarp', warpType: 'body_angle_x' },
 ];
 
 /**
@@ -187,7 +251,7 @@ function buildWarpKeyframes(warpType, gridX, gridY, gridW, gridH, col, row, scal
     // 2.5D Perspective body turn
     // time=1000 is turning screen right
     const rightTurnBody = (cn, rn) => {
-      // Horizontal shear combined with perspective 
+      // Horizontal shear combined with perspective
       // Top moves more than bottom. Left shoulder (near) moves right, right shoulder (far) wraps inward
       const topDxRatio = -0.4 * cn * cn + 0.32 * cn + 0.10;
       const dx = topDxRatio * (1 - rn) * gridW;
@@ -209,6 +273,91 @@ function buildWarpKeyframes(warpType, gridX, gridY, gridW, gridH, col, row, scal
       { time:    0, value: makeGrid(leftTurnBody) },
       { time:  500, value: flat() },
       { time: 1000, value: makeGrid(rightTurnBody) },
+    ];
+  }
+
+  if (warpType === 'neck_follow') {
+    // Neck shears to follow the head turn at reduced amplitude
+    const rightTurn = (cn, rn) => {
+      const dx = (-0.66 * cn * cn + 0.59 * cn + 0.02) * gridW * 0.35;
+      const zScale = 1.0 + (0.5 - cn) * 0.06;
+      const dy = (rn - 0.5) * (zScale - 1) * gridH;
+      return { dx, dy };
+    };
+    const leftTurn = (cn, rn) => { const d = rightTurn(1 - cn, rn); return { dx: -d.dx, dy: d.dy }; };
+    return [
+      { time:    0, value: makeGrid(leftTurn) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(rightTurn) },
+    ];
+  }
+
+  if (warpType === 'face_angle_y') {
+    // Head pitch — looking up (time=1000) / looking down (time=0)
+    const lookUp = (cn, rn) => ({
+      dy: -(0.5 - rn) * 0.28 * gridH,
+      dx: (cn - 0.5) * rn * 0.08 * gridW,
+    });
+    const lookDown = (cn, rn) => ({
+      dy:  (0.5 - rn) * 0.28 * gridH,
+      dx: (cn - 0.5) * (1 - rn) * 0.08 * gridW,
+    });
+    return [
+      { time:    0, value: makeGrid(lookDown) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(lookUp) },
+    ];
+  }
+
+  if (warpType === 'body_angle_y') {
+    // Body pitch — leaning back (time=0) / leaning forward (time=1000)
+    const leanBack    = (cn, rn) => ({ dy:  (0.5 - rn) * 0.20 * gridH, dx: (cn - 0.5) * (1 - rn) * 0.06 * gridW });
+    const leanForward = (cn, rn) => ({ dy: -(0.5 - rn) * 0.20 * gridH, dx: (cn - 0.5) * rn        * 0.06 * gridW });
+    return [
+      { time:    0, value: makeGrid(leanBack) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(leanForward) },
+    ];
+  }
+
+  if (warpType === 'eye_open') {
+    // Eyelid close: top row squishes toward center row
+    // time=0 closed (param=0), time=1000 open (param=1, default)
+    const closed = (_cn, rn) => ({ dx: 0, dy: (0.5 - rn) * 0.65 * gridH });
+    return [
+      { time:    0, value: makeGrid(closed) },
+      { time: 1000, value: flat() },
+    ];
+  }
+
+  if (warpType === 'mouth_open') {
+    // Jaw drop: top row moves up, bottom row moves down
+    // time=0 closed (param=0, flat), time=1000 open (param=1)
+    const open = (_cn, rn) => ({ dx: 0, dy: (rn - 0.5) * 0.55 * gridH });
+    return [
+      { time:    0, value: flat() },
+      { time: 1000, value: makeGrid(open) },
+    ];
+  }
+
+  if (warpType === 'brow_y') {
+    // Uniform vertical translation: down (time=0, param=-1) → up (time=1000, param=1)
+    const shift = 0.25 * gridH;
+    return [
+      { time:    0, value: makeGrid(() => ({ dx: 0, dy:  shift })) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(() => ({ dx: 0, dy: -shift })) },
+    ];
+  }
+
+  if (warpType === 'hair_sway') {
+    // Tip-biased horizontal sway (rn=0 is root/top, rn=1 is tip/bottom)
+    const rightSway = (_cn, rn) => ({ dx: rn * rn * 0.20 * gridW, dy: 0 });
+    const leftSway  = (_cn, rn) => ({ dx: -rn * rn * 0.20 * gridW, dy: 0 });
+    return [
+      { time:    0, value: makeGrid(leftSway) },
+      { time:  500, value: flat() },
+      { time: 1000, value: makeGrid(rightSway) },
     ];
   }
 
@@ -1220,72 +1369,145 @@ export default function CanvasViewport({
         paramAnim = proj.animations[proj.animations.length - 1];
       }
 
-      // Map canonical param ID → warp deformer node ID (for binding wires)
+      // paramId → warpId[] (array; multiple warp deformers may share one parameter)
       const warpNodeIds = {};
 
-      for (const spec of WARP_SPECS) {
-        const group = proj.nodes.find(n => n.type === 'group' && n.boneRole === spec.boneRole);
-        if (!group) continue;
-
-        const children = proj.nodes.filter(n => n.parent === group.id);
-        if (children.length === 0) continue;
-
-        // Collect imageBounds from ALL descendants (through groups and warpDeformers)
-        // so BodyWarp correctly encompasses the head area even though it's in a sub-group.
-        const collectBounds = (parentId) => {
-          for (const n of proj.nodes) {
-            if (n.parent !== parentId) continue;
-            if (n.imageBounds) {
-              minX = Math.min(minX, n.imageBounds.minX);
-              minY = Math.min(minY, n.imageBounds.minY);
-              maxX = Math.max(maxX, n.imageBounds.maxX);
-              maxY = Math.max(maxY, n.imageBounds.maxY);
-            }
-            if (n.type === 'group' || n.type === 'warpDeformer') collectBounds(n.id);
+      // Collect imageBounds from ALL descendants (through groups and warpDeformers)
+      const collectBounds = (proj, parentId, state) => {
+        for (const n of proj.nodes) {
+          if (n.parent !== parentId) continue;
+          if (n.imageBounds) {
+            state.minX = Math.min(state.minX, n.imageBounds.minX);
+            state.minY = Math.min(state.minY, n.imageBounds.minY);
+            state.maxX = Math.max(state.maxX, n.imageBounds.maxX);
+            state.maxY = Math.max(state.maxY, n.imageBounds.maxY);
           }
-        };
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        collectBounds(group.id);
-        if (minX === Infinity) {
-          minX = 0; minY = 0;
-          maxX = proj.canvas.width; maxY = proj.canvas.height;
+          if (n.type === 'group' || n.type === 'warpDeformer') collectBounds(proj, n.id, state);
         }
-        const PAD = 20;
-        const gridX = minX - PAD, gridY = minY - PAD;
-        const gridW = (maxX - minX) + 2 * PAD, gridH = (maxY - minY) + 2 * PAD;
+      };
+
+      // Find parts matching layerTags anywhere within a subtree (skips into groups/warps)
+      const collectTaggedParts = (parentId, tagSet, result = []) => {
+        for (const n of proj.nodes) {
+          if (n.parent !== parentId) continue;
+          const tag = matchTag(n.name);
+          if (tag && tagSet.has(tag)) {
+            result.push(n);
+          } else if (n.type === 'group' || n.type === 'warpDeformer') {
+            collectTaggedParts(n.id, tagSet, result);
+          }
+        }
+        return result;
+      };
+
+      // For a given boneRole group, return the direct-child warp deformer if one
+      // was already created (so nested specs attach inside it, not alongside it).
+      const findWarpChildOf = (boneRole) => {
+        const group = proj.nodes.find(n => n.boneRole === boneRole);
+        if (!group) return null;
+        return proj.nodes.find(n => n.parent === group.id && n.type === 'warpDeformer') ?? group;
+      };
+
+      const createWarp = (spec, parentNode, targetChildren) => {
+        if (targetChildren.length === 0) return;
+        const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+        for (const n of targetChildren) {
+          if (n.imageBounds) {
+            bounds.minX = Math.min(bounds.minX, n.imageBounds.minX);
+            bounds.minY = Math.min(bounds.minY, n.imageBounds.minY);
+            bounds.maxX = Math.max(bounds.maxX, n.imageBounds.maxX);
+            bounds.maxY = Math.max(bounds.maxY, n.imageBounds.maxY);
+          }
+          // Also recurse for groups/warpDeformers to capture child bounds
+          if (n.type === 'group' || n.type === 'warpDeformer') {
+            collectBounds(proj, n.id, bounds);
+          }
+        }
+        if (bounds.minX === Infinity) return; // no bounds — skip
+
+        const PAD = 12;
+        const gridX = bounds.minX - PAD, gridY = bounds.minY - PAD;
+        const gridW = (bounds.maxX - bounds.minX) + 2 * PAD;
+        const gridH = (bounds.maxY - bounds.minY) + 2 * PAD;
         const col = 2, row = 2;
-
         const warpId = uid();
-        warpNodeIds[spec.paramSsId] = warpId;
 
-        // Warp deformer node (child of group)
         proj.nodes.push({
           id: warpId, type: 'warpDeformer', name: spec.warpName,
-          parent: group.id, transform: DEFAULT_TRANSFORM(),
+          parent: parentNode.id, transform: DEFAULT_TRANSFORM(),
           visible: true, opacity: 1,
           col, row, gridX, gridY, gridW, gridH,
           parameterId: spec.paramSsId,
+          warpType: spec.warpType,
         });
 
-        // Reparent all direct children of group under the warp deformer
-        for (const child of children) child.parent = warpId;
+        for (const child of targetChildren) child.parent = warpId;
 
-        // Keyframes with meaningful deformation (scale=1 = 100% strength)
         paramAnim.tracks.push({
           nodeId: warpId, property: 'mesh_verts',
           keyframes: buildWarpKeyframes(spec.warpType, gridX, gridY, gridW, gridH, col, row, 1),
         });
+
+        if (!warpNodeIds[spec.paramSsId]) warpNodeIds[spec.paramSsId] = [];
+        warpNodeIds[spec.paramSsId].push(warpId);
+      };
+
+      for (const spec of WARP_SPECS) {
+        if (spec.boneRole) {
+          // ── boneRole mode: wrap all direct children of this bone group ──
+          const group = proj.nodes.find(n => n.type === 'group' && n.boneRole === spec.boneRole);
+          if (!group) continue;
+          const children = proj.nodes.filter(n => n.parent === group.id);
+          if (children.length === 0) continue;
+
+          // Use full-subtree bounds so BodyWarp encompasses head sub-group area too
+          const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+          collectBounds(proj, group.id, bounds);
+          if (bounds.minX === Infinity) { bounds.minX = 0; bounds.minY = 0; bounds.maxX = proj.canvas.width; bounds.maxY = proj.canvas.height; }
+
+          const PAD = 20;
+          const gridX = bounds.minX - PAD, gridY = bounds.minY - PAD;
+          const gridW = (bounds.maxX - bounds.minX) + 2 * PAD;
+          const gridH = (bounds.maxY - bounds.minY) + 2 * PAD;
+          const col = 2, row = 2;
+          const warpId = uid();
+
+          proj.nodes.push({
+            id: warpId, type: 'warpDeformer', name: spec.warpName,
+            parent: group.id, transform: DEFAULT_TRANSFORM(),
+            visible: true, opacity: 1,
+            col, row, gridX, gridY, gridW, gridH,
+            parameterId: spec.paramSsId,
+            warpType: spec.warpType,
+          });
+
+          for (const child of children) child.parent = warpId;
+
+          paramAnim.tracks.push({
+            nodeId: warpId, property: 'mesh_verts',
+            keyframes: buildWarpKeyframes(spec.warpType, gridX, gridY, gridW, gridH, col, row, 1),
+          });
+
+          if (!warpNodeIds[spec.paramSsId]) warpNodeIds[spec.paramSsId] = [];
+          warpNodeIds[spec.paramSsId].push(warpId);
+
+        } else if (spec.layerTags) {
+          // ── tag mode: find tagged parts within a bone group's subtree ──
+          const searchRoot = findWarpChildOf(spec.insideBoneRole);
+          if (!searchRoot) continue;
+
+          const tagSet = new Set(spec.layerTags);
+          const targets = collectTaggedParts(searchRoot.id, tagSet);
+          createWarp(spec, searchRoot, targets);
+        }
       }
 
-      // Create all 18 standard Live2D parameters; wire bindings for warp-linked ones
+      // Create all standard Live2D parameters; wire bindings for warp-linked ones
       for (const spec of LIVE_RIG_PARAMS) {
-        const paramId = spec.id; // canonical Live2D ID as the project parameter ID
-        const warpId = warpNodeIds[spec.id];
-        const bindings = warpId
-          ? [{ animationId: paramAnim.id, nodeId: warpId, property: 'mesh_verts' }]
-          : [];
+        const warpIds = warpNodeIds[spec.id] ?? [];
+        const bindings = warpIds.map(wid => ({ animationId: paramAnim.id, nodeId: wid, property: 'mesh_verts' }));
         proj.parameters.push({
-          id: paramId, name: spec.name,
+          id: spec.id, name: spec.name,
           min: spec.min, max: spec.max, default: spec.default,
           bindings,
         });
@@ -1301,27 +1523,27 @@ export default function CanvasViewport({
     const newMin = baseDef.min === 0 ? 0 : baseDef.min * s;
     const newMax = baseDef.max * s;
 
-    // Persist the scaled range on the parameter
     updateParameter(paramId, { min: newMin, max: newMax });
 
-    // Rebuild warp keyframes at the new scale (warp-linked params only)
-    const spec = WARP_SPECS.find(ws => ws.paramSsId === paramId);
-    if (spec) {
+    const hasSpec = WARP_SPECS.some(ws => ws.paramSsId === paramId);
+    if (hasSpec) {
       updateProject(proj => {
-        const warpNode = proj.nodes.find(n => n.type === 'warpDeformer' && n.parameterId === paramId);
-        if (!warpNode) return;
         const paramAnim = proj.animations.find(a => a.name === 'Parameters');
         if (!paramAnim) return;
-        const track = paramAnim.tracks.find(t => t.nodeId === warpNode.id && t.property === 'mesh_verts');
-        if (!track) return;
-        track.keyframes = buildWarpKeyframes(
-          spec.warpType, warpNode.gridX, warpNode.gridY, warpNode.gridW, warpNode.gridH,
-          warpNode.col, warpNode.row, s,
-        );
+        const warpNodes = proj.nodes.filter(n => n.type === 'warpDeformer' && n.parameterId === paramId);
+        for (const warpNode of warpNodes) {
+          const track = paramAnim.tracks.find(t => t.nodeId === warpNode.id && t.property === 'mesh_verts');
+          if (!track) continue;
+          const warpType = warpNode.warpType ?? WARP_SPECS.find(ws => ws.paramSsId === paramId)?.warpType;
+          if (!warpType) continue;
+          track.keyframes = buildWarpKeyframes(
+            warpType, warpNode.gridX, warpNode.gridY, warpNode.gridW, warpNode.gridH,
+            warpNode.col, warpNode.row, s,
+          );
+        }
       }, { skipHistory: true });
     }
 
-    // Drive parameterStore to max so the canvas shows the full deformation live
     useParameterStore.getState().setParameterValue(paramId, newMax);
   }, [updateParameter, updateProject]);
 
